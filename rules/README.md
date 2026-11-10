@@ -6,14 +6,14 @@
 
 | 匹配方式 | 域名 / 后缀 | 用途及证据 |
 | --- | --- | --- |
-| 后缀 | `huangguoai.com` | 固定 API 线路 1，正文相对 URL 的基址；`src-tauri/src/net.rs`、`src/html.ts` |
-| 后缀 | `huangguoai.ai` | 固定 API 线路 2；`src-tauri/src/lines.rs` |
-| 精确 | `huangguoai.pages.dev` | 镜像发布页及其 `publish.js`；`src-tauri/src/lines.rs` |
-| 后缀 | `drleao.cn` | 图片 CDN 样本 `pic.drleao.cn`；`src-tauri/src/media.rs` 联网测试 |
-| 后缀 | `hzjvlo.cn` | 视频 CDN 样本 `yd-lphu-hls.hzjvlo.cn`；`src-tauri/src/media.rs` 联网测试 |
-| 后缀 | `xxbgwypx.cc` | 镜像样本 `thu.xxbgwypx.cc` 及动态子域；`src-tauri/src/lines.rs` 测试 |
-| 精确 | `api.github.com` | GitHub Release 更新元数据；`src-tauri/src/api.rs` |
-| 精确 | `github.com` | 更新页面，用户点击后交给外部浏览器；`src-tauri/src/api.rs` |
+| 后缀 | `huangguoai.com` | 固定 API 线路 1，正文相对 URL 的基址；`rust/src/net.rs`、`lib/ui/rich_content.dart` |
+| 后缀 | `huangguoai.ai` | 固定 API 线路 2；`rust/src/lines.rs` |
+| 精确 | `huangguoai.pages.dev` | 镜像发布页及其 `publish.js`；`rust/src/lines.rs` |
+| 后缀 | `drleao.cn` | 图片 CDN 样本 `pic.drleao.cn`；`rust/src/media.rs` 联网测试 |
+| 后缀 | `hzjvlo.cn` | 视频 CDN 样本 `yd-lphu-hls.hzjvlo.cn`；`rust/src/media.rs` 联网测试 |
+| 后缀 | `xxbgwypx.cc` | 镜像样本 `thu.xxbgwypx.cc` 及动态子域；`rust/src/lines.rs` 测试 |
+| 精确 | `api.github.com` | GitHub Release 更新元数据；`rust/src/api.rs` |
+| 精确 | `github.com` | 更新页面，用户点击后交给外部浏览器；`rust/src/api.rs` |
 
 CDN 和镜像三条后缀来自仓库已有样本，不能据此认定它们当前仍在使用。当前发布页在线核对返回 HTTP 403。API 返回的封面、播放地址，HLS 子清单、分片、密钥、重定向地址及镜像列表都可能引入新域名，因此这是一份源码已知目标清单，不是完整流量白名单。新域名应依据代理连接日志继续补充。
 
@@ -84,3 +84,7 @@ sing-box rule-set compile --output rules/hghub.srs rules/hghub.json
 ## 本地验证
 
 已使用 Mihomo v1.19.32 的 `-t` 和 sing-box v1.14.3 的 `check` 检查导入配置；确认 `.list` 与 `.json` 的 8 条目标一致，并对 sing-box 源规则及编译后的 `.srs` 完成 42 项正反匹配检查。验证临时目录已自动清理。
+
+## ??? DNS
+
+?? Rust ????? DNS ???????? RecurseX ????????? `223.5.5.5:443`?`1.1.1.1:443`?????? DoH ????????????????????????????DoH ??? IP ??????? IP SAN????? DNS ???????? TUN ??????????????????? `dns.json` ??? `system` ??????? DNS ?????????? [????](../docs/deployment.md)?

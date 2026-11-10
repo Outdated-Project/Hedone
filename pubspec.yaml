@@ -1,0 +1,46 @@
+name: hghub
+description: 黄果客户端 · Flutter 与 Rust · 仅限非商业用途
+publish_to: none
+version: 2.0.0+20000
+environment:
+  sdk: ^3.13.0
+  flutter: '>=3.47.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  material_ui: ^1.8.0
+  material_3_expressive: 1.2.0
+  flutter_rust_bridge: 2.13.0
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  flutter_secure_storage: ^10.0.0
+  path_provider: ^2.1.5
+  shared_preferences: ^2.5.3
+  url_launcher: ^6.3.2
+  html: ^0.15.6
+  http: ^1.6.0
+  flutter_rust_bridge_hooks: 2.13.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true
+  assets:
+    - LICENSE
+    - assets/brand.png
+    - assets/licenses/
+    - assets/fonts/robotoflex-OFL.txt
+    - assets/fonts/notosanssc-OFL.txt
+  fonts:
+    - family: Roboto Flex
+      fonts:
+        - asset: assets/fonts/robotoflex.ttf
+    - family: Noto Sans SC
+      fonts:
+        - asset: assets/fonts/notosanssc.ttf

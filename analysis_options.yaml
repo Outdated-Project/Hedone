@@ -1,0 +1,17 @@
+include: package:flutter_lints/flutter.yaml
+analyzer:
+  exclude:
+    - .tools/**
+    - .dart_tool/**
+    - build/**
+    - rust/target/**
+    - lib/src/rust/**
+    - android/**
+    - ios/**
+    - windows/**
+    - macos/**
+    - linux/**
+    - web/**
+linter:
+  rules:
+    unawaited_futures: true

@@ -1,33 +1,26 @@
-# 依赖
-node_modules/
-.pnpm-store/
-
-# 构建产物
-dist/
-dist-ssr/
-test-results/
-src-tauri/target/
-src-tauri/gen/
-*.local
-
-# 编辑器 / 系统
-.vscode/*
-!.vscode/extensions.json
+﻿.dart_tool/
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+rust/target/
+.tools/
+.hghub-data/
+coverage/
 .idea/
+*.iml
+*.log
 .DS_Store
 Thumbs.db
-*.log
-
-# 签名与密钥（务必不要提交）
+.vscode/*
+!.vscode/extensions.json
 *.keystore
 *.jks
 *.p12
 *.pem
+!rust/assets/cacert.pem
 .env
 .env.*
-
-# API
-docs/API.md
-
-# Agent instructions (local)
+android/key.properties
 AGENTS.md
