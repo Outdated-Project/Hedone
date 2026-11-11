@@ -35,6 +35,10 @@ String errorMessage(Object error) {
   if (text.contains('SocketException') || text.contains('ClientException')) {
     return '网络连接失败，请检查网络或服务地址';
   }
-  if (text.contains('TimeoutException')) return '请求超时，请重试';
+  if (text.contains('TimeoutException') ||
+      text.contains('timed out') ||
+      text.contains('operation timeout')) {
+    return '连接超时，请检查网络或更换数据线路；也可以在设置中运行网络自检。';
+  }
   return text.length > 220 ? '${text.substring(0, 220)}…' : text;
 }

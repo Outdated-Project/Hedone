@@ -11,7 +11,7 @@ Flutter + Rust 黄果客户端。Android、iOS、Windows、macOS、Linux 共用 
 - 列表、分类、榜单、搜索、详情、剧集、帖子、评论和账号操作接入真实 edge 协议。播放器支持 HLS、拖动、倍速、续播和切集；没有演示数据或伪造接口成功状态。
 - 发现页提供沉浸观看入口，同一部剧内上下滑动切集。页面停稳才切换媒体，复用一个播放器；选集按需构建，临近片尾只预取下一集地址。
 - 会话、网络策略、封面解密、HLS 重写和有界媒体缓存集中在 Rust。原生凭据写入系统安全存储；Web 凭据只保留在服务进程中。
-- DNS 使用 RecurseX 0.2.6：系统解析失败或超时后，以 Courierust 1.1.2 验证加密上游；NextJson 0.1.5 读取配置，RustBinary 0.1.10 支撑 RecurseX 的有界缓存快照。解析版本记录在 Cargo.lock 中。
+- DNS 使用 RecurseX 0.2.6：自动模式保留 VPN FakeIP，普通域名优先使用经过 Courierust 1.1.2 验证的 DoH；不可用时才回退到安全的系统答案。NextJson 0.1.5 读取配置，RustBinary 0.1.10 支撑有界缓存快照。解析版本记录在 Cargo.lock 中。
 
 `material_3_expressive` 是第三方组件实现，不冒称 Flutter 官方组件。Aurora 是应用的统一动效架构，使用 Flutter 自身的调度与渲染能力；仓库没有自研或修改 Flutter 渲染引擎。
 

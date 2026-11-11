@@ -24,7 +24,7 @@ import 'package:hedone/data/models.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('packaged native library initializes and enforces URL policy', (
     tester,
   ) async {
@@ -75,6 +75,20 @@ void main() {
         await bridge.request(
           payload: jsonEncode({'op': 'line_set', 'url': liveBase}),
         );
+        if (const bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')) {
+          final diagnostics = jsonDecode(
+            await bridge.request(payload: '{"op":"net_diag"}'),
+          ) as Map<String, dynamic>;
+          // Only report resolution counts and probe status, never account data
+          // or signed media URLs.
+          final summary = {
+            'dns': diagnostics['dns'],
+            'resolver': diagnostics['resolver'],
+            'http': diagnostics['http'],
+          };
+          binding.reportData = {'network': summary};
+          debugPrint(jsonEncode(summary));
+        }
         final feed = jsonDecode(
           await bridge.request(payload: '{"op":"feed","page":1,"size":1}'),
         );
@@ -308,10 +322,18 @@ void main() {
       model.dispose();
     } finally {
       if (const bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')) {
-        final log = File('${dir.path}/playback.log');
-        if (await log.exists()) {
-          await Directory('build/qa').create(recursive: true);
-          await log.copy('build/qa/native-playback.log');
+        try {
+          final log = File('${dir.path}/playback.log');
+          if (await log.exists()) {
+            // The driver writes on the host. Android's working directory is
+            // read-only; diagnostic export must not mask a playback failure.
+            binding.reportData = {
+              ...?binding.reportData,
+              'playback_log': await log.readAsString(),
+            };
+          }
+        } on FileSystemException {
+          debugPrint('Playback diagnostic export unavailable');
         }
       }
       await dir.delete(recursive: true);

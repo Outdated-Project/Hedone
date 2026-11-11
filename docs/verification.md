@@ -1,5 +1,28 @@
 # 验证
 
+## 2026-11-11—12：推荐、CI 依赖下载与 DNS 回退
+
+推荐修复覆盖四类实际问题：归一化抵消兴趣的时间衰减、短播放覆盖同一视频已有的有效观看、去重空页被误判为列表结束，以及可选搜索召回拖住首页。超过 90 天的兴趣不参与排序；召回最多等待 2 秒，底层请求仍由网络层超时约束。新增回归包含重复分页后继续加载、近期观看与旧搜索的排序，以及召回超时后迟到的错误。
+
+Ubuntu CI 截图中的停顿发生在 APT 下载阶段。工作流将 Azure Ubuntu 镜像替换为官方 Ubuntu 源，保留发行套件与签名检查；增加网络超时、有限重试和步骤时限。已通过 YAML 解析、Bash 语法与内嵌 Python 编译检查；没有把这些本地检查当作 GitHub Linux 构建通过。
+
+DNS `auto` 不再直接采用含内网、回环或保留地址的系统答案。合法 FakeIP 保留给 VPN；普通域名优先使用验证证书的 DoH，仅在 DoH 失败时回退到已通过地址策略的系统答案。IPv4 映射形式的 FakeIP 同样识别。最终目标、重定向和 TLS 校验继续执行。
+
+PLK110 关闭 VPN 后，旧包的地址策略错误已复现；修复版取得 2 个非 FakeIP 地址，诊断累计 `encrypted_answers=4`、`system_answers=0`、`failures=0`，但内容接口在 20 秒后超时。该结果说明加密解析链路已经执行，不能证明解析答案对应的站点在当前网络可达；无 VPN 播放仍未通过。原始记录位于 `build/dns-recovery-native.log` 与 `build/dns-recovery-diagnostic.log`。后一次诊断导出曾写入 Android 的只读工作目录，掩盖测试异常；已改由 integration driver 在电脑端保存 `build/integration_response_data.json`，失败时也保留报告。
+
+本轮完整 Flutter 回归 75 项通过，Rust 回归 65 项通过、8 项联网测试默认忽略，Clippy 全 targets / server / 警告视为错误通过，Flutter analyze 无问题；最终诊断脚本另行静态检查通过。日志为 `build/dns-final-{flutter-tests,tests,clippy,analyze,integration-analyze}.log`。本轮没有改动导航渲染实现，也没有新增可证明帧时间下降的性能数据。
+
+用户恢复 VPN 后，第一次测试仍出现 DNS 超时和媒体加载失败；保留记录后复测通过，未放宽断言或延长播放超时。成功轮的内容接口用时 772 ms，加密解析成功 2 次、失败 0 次；真实视频首帧、播放进度、横竖屏旋转、进度跳转、第一集切到第二集与单播放器复用均通过，随后验证应用主页、设置和许可证页面。日志为 `build/dns-final-vpn-retry.log`，成功和失败的结构化报告分别为 `build/dns-final-vpn-passed-report.json` 与 `build/dns-final-vpn-first-report.json`。这些结果不能替代尚未通过的无 VPN 验收。
+
+最终 Windows 与 Android ARM64 Release 构建通过。Windows ZIP 包含 41 个发布文件，CRC 校验通过；APK 的 CRC 与 v2/v3 签名验证通过。已通过 ADB 保留数据安装到 PLK110，替换测试包，冷启动返回 `Status: ok`。APK 使用现有本机开发密钥，仅供本次设备安装，不作为商店发行签名。
+
+| 最终产物 | SHA-256 |
+| --- | --- |
+| `build/releases/Hedone-1.0.1-dns-recommendations-windows-x64.zip` | `30E6D0834BB775CFBB73D20C3598C93EEB91992EE59A245EB16C28762277B69A` |
+| `build/releases/Hedone-1.0.1-dns-recommendations-arm64-local-test.apk` | `8B6B9C6FA96DBEE4CC0166A7907E275670D44225E3C3ABBAC21C390EEF01236D` |
+
+本节文件同时包含推荐与 DNS 修复。此前 `recommendations-fix` 和 `recursex026` 包不包含最终 DNS 逻辑；下文历史验收及哈希不能混用。
+
 ## 2026-11-11：RecurseX 0.2.6、连续动量与合成层修复
 
 本轮基于现有工作区增量修改，未回退此前未提交的功能。RecurseX 使用 crates.io 的 0.2.6，显式启用 std/doh/persist；设置页和诊断版本同步更新。加密解析禁止明文递归、关闭上游竞速，系统根证书库为空时使用随包 CA，保留 IP 身份验证、工作许可、超时和缓存预算。

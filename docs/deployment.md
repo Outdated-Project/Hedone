@@ -43,7 +43,7 @@ Windows 工程与 Pub 缓存位于不同盘符时，Kotlin 增量缓存可能无
 }
 ```
 
-`auto` 保留系统 DNS 与 FakeIP，失败后启用 RecurseX；`system` 完全遵循系统解析；`encrypted` 直接使用配置的加密上游。该版本 RecurseX/Courierust 的固定 IP DoH 要求 `host` 与 `ip` 相同，服务器证书必须包含该 IP 的 SAN；不允许关闭证书校验。最多配置 4 个真实公网 IP，使用 HTTPS 443 的 `/dns-query`。不接受任意自定义解析 URL。
+`auto` 保留通过安全检查的 VPN FakeIP 答案，普通域名优先使用 RecurseX DoH，失败时才采用安全的系统答案。这样不会把返回成功但被污染的系统解析直接当成正确结果；普通域名也会被发送到配置的 DoH 上游。`system` 完全遵循系统解析，适合必须统一 DNS 的受管网络；`encrypted` 只使用配置的加密上游。三种模式的最终地址均须通过网络策略检查。该版本 RecurseX/Courierust 的固定 IP DoH 要求 `host` 与 `ip` 相同，服务器证书必须包含该 IP 的 SAN；不允许关闭证书校验。最多配置 4 个真实公网 IP，使用 HTTPS 443 的 `/dns-query`。不接受任意自定义解析 URL。
 
 加密 DNS 直连这些公共服务，不使用 `HEDONE_PROXY` 的 HTTP 代理配置。TUN 可以按自身策略接管；受管网络要求统一 DNS 时使用 `system`。系统信任库不可读取的平台使用随包附带的 Mozilla 公共 CA，证书包来源及更新方式见 [证书说明](../rust/assets/README.md)。
 

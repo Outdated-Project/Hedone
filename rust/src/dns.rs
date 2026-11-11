@@ -1,5 +1,3 @@
-//! Bounded system DNS with a verified RecurseX DoH fallback.
-//! This resolver never changes the HTTP target policy or the TLS hostname.
 use courierust::courierust_tls::{RootStore, system_roots};
 use nextjson::{NsonDeserialize, NsonSerialize};
 use nextjson::{Value, json};
@@ -21,7 +19,6 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(7);
 const CONFIG_LIMIT: u64 = 16 * 1024;
 const ENGINE: &str = "RecurseX 0.2.6";
 static STATE: OnceCell<Arc<Dns>> = OnceCell::const_new();
-// A permit stays inside the blocking job even if the async caller is cancelled.
 static WORKERS: Semaphore = Semaphore::const_new(8);
 static SYSTEM_WORKERS: Semaphore = Semaphore::const_new(4);
 
@@ -82,28 +79,26 @@ fn load_settings(dir: Option<&Path>) -> Result<Settings, String> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
-        Err(_) => return Err("无法读取 dns.json".into()),
+        Err(_) => return Err("Failed to read dns.json".into()),
     };
     let mut bytes = Vec::new();
     file.take(CONFIG_LIMIT + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "无法读取 dns.json")?;
+        .map_err(|_| "Failed to read dns.json")?;
     if bytes.len() as u64 > CONFIG_LIMIT {
-        return Err("dns.json 超过 16 KiB".into());
+        return Err("dns.json is over 16 KiB".into());
     }
-    nextjson::nextdecode(&bytes).map_err(|_| "dns.json 格式无效".into())
+    nextjson::nextdecode(&bytes).map_err(|_| "dns.json format is invalid".into())
 }
 
 fn make_config(settings: &Settings, dir: Option<&Path>) -> Result<ResolverConfig, String> {
     if !matches!(settings.mode.as_str(), "auto" | "system" | "encrypted") {
-        return Err("dns.json mode 只允许 auto、system、encrypted".into());
+        return Err("The `dns.json` mode only allows `auto`, `system`, or `encrypted`".into());
     }
     if settings.upstreams.is_empty() || settings.upstreams.len() > 4 {
-        return Err("DNS 加密上游必须为 1–4 个".into());
+        return Err("There must be 1–4 encrypted DNS upstream servers".into());
     }
     let mut config = ResolverConfig::default();
-    // The application owns system-DNS fallback. This resolver must never
-    // escape the configured, certificate-verified DoH endpoints via recursion.
     config.dns.privacy.encrypted_only = true;
     config.dns.privacy.parallel = false;
     config.dns.privacy.max_upstreams = settings.upstreams.len();
@@ -120,15 +115,20 @@ fn make_config(settings: &Settings, dir: Option<&Path>) -> Result<ResolverConfig
     config.max_concurrent_refreshes = 0;
     config.max_prefetch_per_tick = 0;
     for upstream in &settings.upstreams {
-        let ip: IpAddr = upstream.ip.parse().map_err(|_| "DNS 上游必须提供固定 IP")?;
+        let ip: IpAddr = upstream
+            .ip
+            .parse()
+            .map_err(|_| "Encrypted DNS upstream must provide a fixed IP")?;
         if !crate::network_policy::allowed_ip(ip)
             || matches!(ip, IpAddr::V4(v) if v.octets()[0] == 198 && matches!(v.octets()[1], 18 | 19))
         {
-            return Err("DNS 上游必须使用真实公网 IP".into());
+            return Err("The DNS upstream must use a real public IP address".into());
         }
         // This pinned DoH backend authenticates the URL's IP SAN.
         if upstream.host.parse::<IpAddr>().ok() != Some(ip) {
-            return Err("此版本 DoH 的 TLS 身份必须与上游 IP 相同".into());
+            return Err(
+                "For this version of DoH, the TLS identity must match the upstream IP".into(),
+            );
         }
         let forwarder = Forwarder::encrypted(
             Endpoint {
@@ -140,18 +140,16 @@ fn make_config(settings: &Settings, dir: Option<&Path>) -> Result<ResolverConfig
         );
         forwarder
             .validate()
-            .map_err(|e| format!("DNS 上游配置无效：{e}"))?;
+            .map_err(|e| format!("Invalid DNS upstream configuration: {e}"))?;
         config.engine.forwarders.push(forwarder);
     }
-    // Courierust loads the OS store on supported hosts. Mobile sandbox hosts
-    // without a readable store use the versioned Mozilla bundle, never verify=false.
     config.engine.forwarder_roots = match system_roots::load() {
         Ok(roots) if !roots.is_empty() => roots,
         _ => {
             let mut roots = RootStore::new();
             roots
                 .add_pem(include_str!("../assets/cacert.pem"))
-                .map_err(|_| "无法加载加密 DNS 的 CA 证书")?;
+                .map_err(|_| "Failed to load the CA certificate for encrypted DNS")?;
             roots
         }
     };
@@ -179,7 +177,7 @@ async fn state(dir: Option<PathBuf>) -> Result<&'static Arc<Dns>, String> {
                 }))
             })
             .await
-            .map_err(|_| "DNS 初始化任务失败".to_string())?
+            .map_err(|_| "DNS initialization task failed".to_string())?
         })
         .await
 }
@@ -189,19 +187,22 @@ pub async fn initialize(dir: &Path) -> Result<(), String> {
 }
 
 async fn encrypted(dns: Arc<Dns>, host: String, kind: RrType) -> Result<Vec<IpAddr>, String> {
-    let permit = WORKERS.acquire().await.map_err(|_| "DNS 调度已关闭")?;
+    let permit = WORKERS
+        .acquire()
+        .await
+        .map_err(|_| "Encrypted DNS scheduling is closed")?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let name = Name::from_ascii(&host).map_err(|_| "DNS 主机名无效")?;
+        let name = Name::from_ascii(&host).map_err(|_| "Invalid DNS host name")?;
         let result = dns
             .resolver
             .resolve(&name, kind)
-            .map_err(|e| format!("RecurseX DNS 查询失败：{e}"))?;
+            .map_err(|e| format!("RecurseX DNS query failed: {e}"))?;
         if result.rcode == Rcode::NXDOMAIN {
-            return Err("DNS NXDOMAIN：域名不存在，请更换数据线路".into());
+            return Err("DNS NXDOMAIN: Domain does not exist, please change the data line".into());
         }
         if result.rcode != Rcode::NOERROR {
-            return Err(format!("DNS 返回 {:?}", result.rcode));
+            return Err(format!("DNS returns {:?}", result.rcode));
         }
         let addresses = result
             .answers
@@ -212,8 +213,6 @@ async fn encrypted(dns: Arc<Dns>, host: String, kind: RrType) -> Result<Vec<IpAd
                 _ => None,
             })
             .collect();
-        // RecurseX writes its bounded snapshot through rustbinary/nextjson.
-        // No timer or background polling wakes an idle media client.
         if let Ok(mut last) = dns.last_save.try_lock()
             && last.elapsed() >= Duration::from_secs(60)
         {
@@ -223,38 +222,44 @@ async fn encrypted(dns: Arc<Dns>, host: String, kind: RrType) -> Result<Vec<IpAd
         Ok(addresses)
     })
     .await
-    .map_err(|_| "DNS 工作线程失败".to_string())?
+    .map_err(|_| "Encrypted DNS worker thread failed".to_string())?
 }
 
 async fn system(host: String, port: u16) -> Result<Vec<SocketAddr>, String> {
     let permit = SYSTEM_WORKERS
         .acquire()
         .await
-        .map_err(|_| "DNS 调度已关闭")?;
+        .map_err(|_| "System DNS scheduling closed")?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         (host.as_str(), port)
             .to_socket_addrs()
             .map(|addresses| addresses.collect())
-            .map_err(|_| "系统 DNS 解析失败".to_string())
+            .map_err(|_| "System DNS resolution failed".to_string())
     })
     .await
-    .map_err(|_| "系统 DNS 工作线程失败".to_string())?
+    .map_err(|_| "System DNS worker thread failed".to_string())?
 }
 
 pub async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     let dns = state(None).await?;
+    let mut system_fallback = None;
     if dns.settings.mode != "encrypted" {
         if let Ok(Ok(addresses)) =
             tokio::time::timeout(SYSTEM_TIMEOUT, system(host.to_owned(), port)).await
-            && !addresses.is_empty()
+            && use_system_answer(&dns.settings.mode, &addresses)
         {
-            dns.system_answers.fetch_add(1, Ordering::Relaxed);
-            return Ok(addresses);
+            // Preserve a VPN's validated FakeIP mapping. Ordinary public
+            // answers may still be poisoned, so prefer authenticated DoH.
+            if dns.settings.mode == "system" || contains_fake_ip(&addresses) {
+                dns.system_answers.fetch_add(1, Ordering::Relaxed);
+                return Ok(addresses);
+            }
+            system_fallback = Some(addresses);
         }
         if dns.settings.mode == "system" {
             dns.failures.fetch_add(1, Ordering::Relaxed);
-            return Err("系统 DNS 解析失败或超时".into());
+            return Err("System DNS resolution failed or timed out".into());
         }
     }
     let result = tokio::time::timeout(LOOKUP_TIMEOUT, async {
@@ -265,14 +270,35 @@ pub async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
         combine(v4, v6, port)
     })
     .await
-    .map_err(|_| "RecurseX DNS 解析超时".to_string())
+    .map_err(|_| "RecurseX DNS resolution timeout".to_string())
     .and_then(|r| r);
     if result.is_ok() {
         dns.encrypted_answers.fetch_add(1, Ordering::Relaxed);
+    } else if let Some(addresses) = system_fallback {
+        dns.system_answers.fetch_add(1, Ordering::Relaxed);
+        return Ok(addresses);
     } else {
         dns.failures.fetch_add(1, Ordering::Relaxed);
     }
     result
+}
+
+fn contains_fake_ip(addresses: &[SocketAddr]) -> bool {
+    addresses.iter().any(|address| {
+        let v4 = match address.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(ip) => ip.to_ipv4_mapped(),
+        };
+        v4.is_some_and(|ip| ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19))
+    })
+}
+
+fn use_system_answer(mode: &str, addresses: &[SocketAddr]) -> bool {
+    !addresses.is_empty()
+        && (mode == "system"
+            || addresses
+                .iter()
+                .all(|address| crate::network_policy::allowed_ip(address.ip())))
 }
 
 fn combine(
@@ -281,7 +307,7 @@ fn combine(
     port: u16,
 ) -> Result<Vec<SocketAddr>, String> {
     let mut addresses = Vec::new();
-    let mut error = "DNS 没有可用的 A/AAAA 记录".to_string();
+    let mut error = "DNS has no available A/AAAA records".to_string();
     for result in [v6, v4] {
         match result {
             Ok(ips) => addresses.extend(ips.into_iter().map(|ip| SocketAddr::new(ip, port))),
@@ -312,6 +338,38 @@ pub fn diagnostics() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_retries_restricted_system_answers_without_weakening_system_mode() {
+        let public: SocketAddr = "1.1.1.1:443".parse().unwrap();
+        let blocked: SocketAddr = "0.0.0.0:443".parse().unwrap();
+        assert!(use_system_answer("auto", &[public]));
+        assert!(!contains_fake_ip(&[public]));
+        assert!(contains_fake_ip(&["198.18.0.1:443".parse().unwrap()]));
+        assert!(contains_fake_ip(&["[::ffff:198.19.0.1]:443"
+            .parse()
+            .unwrap()]));
+        assert!(!contains_fake_ip(&["[::ffff:1.1.1.1]:443"
+            .parse()
+            .unwrap()]));
+        assert!(use_system_answer(
+            "auto",
+            &["198.18.0.1:443".parse().unwrap()]
+        ));
+        assert!(!use_system_answer("auto", &[]));
+        for denied in [
+            blocked,
+            "127.0.0.1:443".parse().unwrap(),
+            "[::1]:443".parse().unwrap(),
+        ] {
+            assert!(!use_system_answer("auto", &[denied]));
+            assert!(!use_system_answer("auto", &[public, denied]));
+            assert!(use_system_answer("system", &[public, denied]));
+            assert!(
+                crate::network_policy::check_addresses_with_mode(&[public, denied], true).is_err()
+            );
+        }
+    }
 
     #[test]
     fn nextjson_defaults_and_binary_contract_round_trip() {
