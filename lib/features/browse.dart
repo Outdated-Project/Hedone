@@ -200,7 +200,20 @@ class _BrowseScreenState extends State<BrowseScreen> {
                     ? null
                     : () => _controller.next(),
               );
-              if (_controller.error == null) return status;
+              if (_controller.error == null) {
+                if (_controller.loading || !_controller.hasMore) return status;
+                return SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      status,
+                      M3EButton(
+                        onPressed: () => _controller.next(),
+                        label: const Text('继续发现'),
+                      ),
+                    ],
+                  ),
+                );
+              }
               return SingleChildScrollView(
                 child: Column(
                   children: [

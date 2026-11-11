@@ -77,7 +77,8 @@ class Repository {
     final pagination = object(value['pagination']);
     return PageResult(
       items,
-      op != 'rank' &&
+      items.isNotEmpty &&
+          op != 'rank' &&
           (pagination.containsKey('pages')
               ? page < number(pagination['pages'])
               : items.length == 24),

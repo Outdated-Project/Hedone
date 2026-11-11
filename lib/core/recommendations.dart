@@ -13,6 +13,7 @@ class RecommendationProfile {
 
   void watch(VideoItem video, int positionMs, {DateTime? now}) {
     if (video.id <= 0 || positionMs < 5000) return;
+    final previous = _views[video.id];
     _views.remove(video.id);
     _views[video.id] = (
       video: VideoItem(
@@ -26,7 +27,10 @@ class RecommendationProfile {
             .toList(),
       ),
       at: (now ?? DateTime.now()).millisecondsSinceEpoch,
-      engagement: (positionMs / 120000).clamp(.15, 1.0),
+      engagement: max(
+        previous?.engagement ?? 0,
+        (positionMs / 120000).clamp(.15, 1.0),
+      ),
     );
     while (_views.length > maxViews) {
       _views.remove(_views.keys.first);
@@ -127,7 +131,8 @@ class RecommendationProfile {
 
   Map<String, double> _interests(DateTime now) {
     final watch = <String, double>{}, search = <String, double>{};
-    void add(
+    double watchStrength = 0, searchStrength = 0;
+    double add(
       Map<String, double> map,
       Set<String> terms,
       int at,
@@ -136,18 +141,28 @@ class RecommendationProfile {
     ) {
       final days =
           max(0, now.millisecondsSinceEpoch - at) / Duration.millisecondsPerDay;
-      final value =
-          weight * pow(.5, days / halfLife) / max(1, sqrt(terms.length));
+      if (at > now.millisecondsSinceEpoch || days >= 90 || terms.isEmpty) {
+        return 0;
+      }
+      final strength = weight * pow(.5, days / halfLife);
+      final value = strength / max(1, sqrt(terms.length));
       for (final term in terms) {
         map.update(term, (v) => v + value, ifAbsent: () => value);
       }
+      return strength;
     }
 
     for (final view in _views.values) {
-      add(watch, features(view.video), view.at, view.engagement, 14);
+      watchStrength = max(
+        watchStrength,
+        add(watch, features(view.video), view.at, view.engagement, 14),
+      );
     }
     for (final query in _searches.entries) {
-      add(search, tokens(query.key), query.value, 1, 7);
+      searchStrength = max(
+        searchStrength,
+        add(search, tokens(query.key), query.value, 1, 7),
+      );
     }
     final merged = <String, double>{};
     void merge(Map<String, double> map, double share) {
@@ -162,8 +177,10 @@ class RecommendationProfile {
       }
     }
 
-    merge(watch, search.isEmpty ? 1 : .65);
-    merge(search, watch.isEmpty ? 1 : .35);
+    // Normalize source volume, then retain absolute freshness and engagement.
+    // Otherwise a single old event has exactly the same weight as a new one.
+    merge(watch, (search.isEmpty ? 1 : .65) * watchStrength);
+    merge(search, (watch.isEmpty ? 1 : .35) * searchStrength);
     return merged;
   }
 
@@ -201,6 +218,7 @@ class RecommendationProfile {
     if (isEmpty) return items;
     final time = now ?? DateTime.now();
     final interests = _interests(time);
+    if (interests.isEmpty) return items;
     final terms = {for (final v in items) v.id: features(v)};
     final scores = <int, double>{};
     for (final v in items) {
@@ -256,7 +274,12 @@ class RecommendationProfile {
 /// Fetching is separate from scoring; a failed optional recall never discards
 /// a working feed. Generation checks keep stale refreshes out of dedup state.
 class RecommendationFeed {
-  RecommendationFeed(this.repository, this.profile);
+  RecommendationFeed(
+    this.repository,
+    this.profile, {
+    this.recallTimeout = const Duration(seconds: 2),
+  });
+  final Duration recallTimeout;
   final Repository repository;
   final RecommendationProfile profile;
   final Set<int> _seen = {};
@@ -275,6 +298,7 @@ class RecommendationFeed {
         ? Future.value(const PageResult<VideoItem>([], false))
         : repository
               .videos('search', 1, fields: {'q': topic})
+              .timeout(recallTimeout)
               .catchError((Object _) => const PageResult<VideoItem>([], false));
     final results = await Future.wait([
       repository.videos('feed', page),

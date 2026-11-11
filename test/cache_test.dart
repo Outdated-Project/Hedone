@@ -73,7 +73,7 @@ void main() {
         (page) async => switch (page) {
           1 => const PageResult([1, 2], true),
           2 => const PageResult([2, 3], true),
-          _ => const PageResult([], true),
+          _ => const PageResult([], false),
         },
         identity: (v) => v,
       );

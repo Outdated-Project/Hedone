@@ -35,7 +35,9 @@ class PagedController<T> extends ChangeNotifier {
       for (final item in result.items) {
         if (identity == null || _seen.add(identity!(item))) items.add(item);
       }
-      hasMore = result.hasMore && result.items.isNotEmpty;
+      // A page can be empty after recommendation deduplication while later
+      // upstream pages still contain unseen results. Honor the source cursor.
+      hasMore = result.hasMore;
       _page++;
     } catch (e) {
       if (!_disposed && generation == _generation) error = errorMessage(e);

@@ -14,6 +14,48 @@ VideoItem video(int id, String title, [List<String> tags = const []]) =>
 
 void main() {
   final now = DateTime.utc(2026, 11, 11);
+  test('old search does not overpower a recent viewing interest', () {
+    final profile = RecommendationProfile();
+    profile.search('烹饪', now: now.subtract(const Duration(days: 80)));
+    profile.watch(video(1, '星际', ['科幻']), 120000, now: now);
+    for (var seed = 0; seed < 30; seed++) {
+      final ranked = profile.rank(
+        [video(2, '烹饪'), video(3, '科幻')],
+        random: Random(seed),
+        now: now,
+      );
+      expect(ranked.first.id, 3);
+    }
+  });
+  test('expired runtime signals behave like a restored cold profile', () {
+    final profile = RecommendationProfile()
+      ..search('烹饪', now: now.subtract(const Duration(days: 91)));
+    final items = [video(1, '烹饪'), video(2, '星际'), video(3, '旅行')];
+    expect(
+      profile.rank(items, random: Random(9), now: now).map((v) => v.id),
+      RecommendationProfile()
+          .rank(items, random: Random(9), now: now)
+          .map((v) => v.id),
+    );
+  });
+  test('a new episode does not erase established engagement', () {
+    final profile = RecommendationProfile()
+      ..watch(video(1, '星际'), 120000, now: now);
+    profile.watch(video(1, '星际'), 6000, now: now);
+    expect(objects(profile.toJson()['views']).single['engagement'], 1);
+  });
+  test('optional recall cannot block a working feed indefinitely', () async {
+    final transport = _SlowRecall();
+    final feed = RecommendationFeed(
+      Repository(transport),
+      RecommendationProfile()..search('星际'),
+      recallTimeout: const Duration(milliseconds: 10),
+    );
+    final result = await feed.load(1).timeout(const Duration(seconds: 1));
+    expect(result.items, hasLength(4));
+    transport.pending.completeError(StateError('late network error'));
+    await Future<void>.delayed(Duration.zero);
+  });
   test('cold start shuffles real candidates and deduplicates IDs', () {
     final profile = RecommendationProfile();
     final candidates = List.generate(30, (i) => video(i + 1, '故事 $i'));
@@ -180,4 +222,11 @@ class _RecallFailure extends FixtureTransport {
     if (payload['op'] == 'search') return Future.error(StateError('offline'));
     return super.request(payload);
   }
+}
+
+class _SlowRecall extends FixtureTransport {
+  final pending = Completer<dynamic>();
+  @override
+  Future<dynamic> request(Json payload) =>
+      payload['op'] == 'search' ? pending.future : super.request(payload);
 }

@@ -5,6 +5,22 @@ import 'package:hedone/core/paged_controller.dart';
 import 'package:hedone/data/models.dart';
 
 void main() {
+  test('a deduplicated empty page does not hide later pages', () async {
+    final controller = PagedController<int>(
+      (page) async => switch (page) {
+        1 => const PageResult([1], true),
+        2 => const PageResult([], true),
+        _ => const PageResult([3], false),
+      },
+    );
+    await controller.next();
+    await controller.next();
+    expect(controller.hasMore, isTrue);
+    await controller.next();
+    expect(controller.items, [1, 3]);
+    expect(controller.hasMore, isFalse);
+    controller.dispose();
+  });
   test(
     'refresh discards an older response and preserves the current request',
     () async {

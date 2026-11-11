@@ -33,7 +33,29 @@ jobs:
           cache: true
       - uses: dtolnay/rust-toolchain@1.99.1
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libmpv-dev libsecret-1-dev libjsoncpp-dev
+        name: Install Linux build dependencies
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Hosted runner Azure mirrors can stall. Keep Ubuntu's signature
+          # policy and suites, changing only that mirror to the official CDN.
+          sudo python3 - <<'PY'
+          from pathlib import Path
+          paths = [Path('/etc/apt/sources.list')]
+          paths += list(Path('/etc/apt/sources.list.d').glob('*.list'))
+          paths += list(Path('/etc/apt/sources.list.d').glob('*.sources'))
+          for path in paths:
+              if path.is_file():
+                  source = path.read_text()
+                  updated = source.replace('http://azure.archive.ubuntu.com/ubuntu', 'https://archive.ubuntu.com/ubuntu')
+                  updated = updated.replace('https://azure.archive.ubuntu.com/ubuntu', 'https://archive.ubuntu.com/ubuntu')
+                  if updated != source:
+                      path.write_text(updated)
+          PY
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update
+          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libmpv-dev libsecret-1-dev libjsoncpp-dev
       - run: flutter pub get --enforce-lockfile
       - run: flutter analyze
       - run: flutter test
