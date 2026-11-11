@@ -146,7 +146,7 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> setLine(String url) async {
-    if (_accountBusy) return;
+    if (_accountBusy) throw StateError('账号操作正在进行，请稍后切换线路');
     _accountBusy = true;
     notifyListeners();
     try {

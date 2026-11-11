@@ -1,8 +1,8 @@
 //! Small FFI surface. The upstream JSON envelope is decoded once in Dart's repository.
 //! A closed request enum prevents callers from constructing arbitrary authenticated paths.
 use crate::{api, gateway, media, net, playback_log};
-use serde::Deserialize;
-use serde_json::{json, Value};
+use nextjson::NsonDeserialize as Deserialize;
+use nextjson::{Value, json};
 use std::path::PathBuf;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -52,11 +52,11 @@ fn runtime() -> Result<&'static Runtime, String> {
 }
 
 fn encode(value: Value) -> Result<String, String> {
-    serde_json::to_string(&value).map_err(|_| "响应编码失败".into())
+    nextjson::to_string(&value).map_err(|_| "响应编码失败".into())
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+#[njson(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     Boot,
     Feed {
@@ -161,6 +161,15 @@ enum Request {
 }
 
 impl Request {
+    fn uses_identity(&self) -> bool {
+        // These operations never read credentials. Diagnostics capture their
+        // origin before awaiting; probes already carry explicit target URLs.
+        !matches!(
+            self,
+            Self::LineMirrors | Self::LineProbe { .. } | Self::NetDiag | Self::CheckUpdate
+        )
+    }
+
     fn changes_identity(&self) -> bool {
         matches!(
             self,
@@ -181,7 +190,7 @@ impl Request {
             | Self::PostComments { page, size, .. }
                 if *page == 0 || *page > 100_000 || *size == 0 || *size > 60 =>
             {
-                return Err("分页参数无效".into())
+                return Err("分页参数无效".into());
             }
             _ => {}
         }
@@ -248,14 +257,17 @@ pub(crate) async fn execute(rt: &Runtime, payload: &str) -> Result<String, Strin
     if payload.len() > 32768 {
         return Err("请求过大".into());
     }
-    let request: Request = serde_json::from_str(payload).map_err(|_| "请求格式无效")?;
+    let request: Request = nextjson::from_str(payload).map_err(|_| "请求格式无效")?;
     request.validate()?;
     let (read, write);
     if request.changes_identity() {
         write = Some(rt.identity.write().await);
         read = None;
-    } else {
+    } else if request.uses_identity() {
         read = Some(rt.identity.read().await);
+        write = None;
+    } else {
+        read = None;
         write = None;
     }
     let a = &rt.api;
@@ -308,10 +320,10 @@ pub(crate) async fn execute(rt: &Runtime, payload: &str) -> Result<String, Strin
             api::cache_clear().await?;
             json!({"ok":true})
         }
-        Request::LogStatus => serde_json::to_value(playback_log::playback_log_status()?)
+        Request::LogStatus => nextjson::to_value(&playback_log::playback_log_status()?)
             .map_err(|_| "日志状态编码失败")?,
         Request::LogSet { enabled } => {
-            serde_json::to_value(playback_log::playback_log_set(enabled)?)
+            nextjson::to_value(&playback_log::playback_log_set(enabled)?)
                 .map_err(|_| "日志状态编码失败")?
         }
         Request::LogRead => json!({"text":playback_log::playback_log_read()?}),
@@ -344,10 +356,7 @@ pub fn media_url(url: String, image: bool) -> Result<String, String> {
     }
     let prefix = &runtime()?.gateway.origin;
     let route = if image { "img" } else { "stream" };
-    Ok(format!(
-        "{prefix}/{route}?u={}",
-        percent_encoding::utf8_percent_encode(&url, percent_encoding::NON_ALPHANUMERIC)
-    ))
+    Ok(crate::media::gateway_url(prefix, route, &url))
 }
 
 pub fn validate_external_url(url: String) -> Result<String, String> {
@@ -357,19 +366,49 @@ pub fn validate_external_url(url: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn connection_probes_do_not_contend_with_account_changes() {
+        let rt = Runtime {
+            api: api::Api::new(),
+            // This request does not use the gateway or perform network I/O.
+            gateway: gateway::Gateway {
+                origin: String::new(),
+            },
+            identity: RwLock::new(()),
+        };
+        let _account_change = rt.identity.write().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            execute(&rt, r#"{"op":"line_probe","urls":[]}"#),
+        )
+        .await
+        .expect("a diagnostic probe must not wait on the account lock")
+        .unwrap();
+        assert_eq!(nextjson::from_str::<Value>(&result).unwrap(), json!([]));
+        assert!(Request::Feed { page: 1, size: 1 }.uses_identity());
+        assert!(
+            Request::LineSet {
+                url: "https://huangguoai.com".into()
+            }
+            .changes_identity()
+        );
+    }
+
     #[test]
     fn bridge_rejects_unknown_operations_and_invalid_parameters() {
-        assert!(serde_json::from_str::<Request>(r#"{"op":"exec","command":"anything"}"#).is_err());
+        assert!(nextjson::from_str::<Request>(r#"{"op":"exec","command":"anything"}"#).is_err());
         for raw in [
             r#"{"op":"feed","page":0,"size":20}"#,
             r#"{"op":"category","cate":"../../account","page":1,"size":20}"#,
             r#"{"op":"play","id":1,"ep":0}"#,
             r#"{"op":"search","q":" ","page":1,"size":20}"#,
         ] {
-            assert!(serde_json::from_str::<Request>(raw)
-                .unwrap()
-                .validate()
-                .is_err());
+            assert!(
+                nextjson::from_str::<Request>(raw)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
         }
     }
 }

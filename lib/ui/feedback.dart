@@ -41,7 +41,11 @@ class StatusPane extends StatelessWidget {
             ),
           const SizedBox(height: 18),
           Text(
-            loading ? '正在加载' : error ?? message,
+            loading
+                ? '正在加载'
+                : error == null
+                ? message
+                : errorMessage(error!),
             textAlign: TextAlign.center,
           ),
           if (!loading && onRetry != null) ...[

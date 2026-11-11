@@ -4,8 +4,8 @@
 //! 镜像地址来自 <https://huangguoai.pages.dev/>：那个页面本身是空壳，真正的清单在
 //! `publish.js` 里（`var urls` 域名数组 + `var subdomains` 子域数组，页面自己随机拼）。
 
-use serde_json::{json, Value};
-use std::time::{Duration, Instant};
+use nextjson::{Value, json};
+use std::time::Duration;
 
 /// 固定线路：写死在客户端里，不依赖任何外部页面。
 pub const FIXED: [(&str, &str); 2] = [
@@ -18,10 +18,12 @@ const MIRROR_MAX: usize = 60;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub fn fixed() -> Value {
-    json!(FIXED
-        .iter()
-        .map(|(name, url)| json!({ "name": name, "url": url }))
-        .collect::<Vec<_>>())
+    json!(
+        FIXED
+            .iter()
+            .map(|(name, url)| json!({ "name": name, "url": url }))
+            .collect::<Vec<_>>()
+    )
 }
 
 /// 拉地址发布页 → 解析 publish.js → 拼出镜像地址。只在用户点开「线路」时调用。
@@ -85,23 +87,12 @@ pub async fn probe(urls: Vec<String>) -> Value {
 }
 
 async fn probe_one(url: String) -> Value {
-    let target = format!("{}/", url.trim_end_matches('/'));
-    let started = Instant::now();
-    let res = crate::net::get(
-        &target,
-        PROBE_TIMEOUT,
-        Some("text/html,application/xhtml+xml"),
-        None,
-    )
-    .await;
-    let ms = started.elapsed().as_millis() as u64;
-    match res {
-        Ok(r) => {
-            let status = r.status().as_u16();
-            json!({ "url": url, "ok": status < 400, "status": status, "ms": ms })
-        }
-        Err(e) => json!({ "url": url, "ok": false, "ms": ms, "error": e }),
-    }
+    let mut report = crate::net::probe_content(&url, PROBE_TIMEOUT).await;
+    report
+        .as_object_mut()
+        .expect("probe report is an object")
+        .insert("url".into(), json!(url));
+    report
 }
 
 async fn get_text(url: &str) -> Result<String, String> {
@@ -258,7 +249,7 @@ var foreverUrls = [
     #[ignore = "联网测试：请求上游镜像列表，手动用 --ignored 运行"]
     async fn mirrors_live() {
         match mirrors().await {
-            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).expect("json")),
+            Ok(v) => println!("{}", nextjson::to_string_pretty(&v).expect("json")),
             Err(e) => panic!("mirrors failed: {e}"),
         }
     }
@@ -274,7 +265,7 @@ var foreverUrls = [
         ];
         println!(
             "{}",
-            serde_json::to_string_pretty(&probe(urls).await).expect("json")
+            nextjson::to_string_pretty(&probe(urls).await).expect("json")
         );
     }
 }

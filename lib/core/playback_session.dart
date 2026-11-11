@@ -19,6 +19,9 @@ class PlaybackSession extends ChangeNotifier with WidgetsBindingObserver {
       configuration: const PlayerConfiguration(
         title: 'HGhub',
         bufferSize: 8 * 1024 * 1024,
+        logLevel: bool.fromEnvironment('HGHUB_CAPTURE_DIAGNOSTICS')
+            ? MPVLogLevel.debug
+            : MPVLogLevel.error,
       ),
     );
     _created = true;

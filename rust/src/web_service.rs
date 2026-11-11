@@ -1,20 +1,21 @@
 //! Same-origin Flutter Web host with isolated, expiring server-side sessions.
+use crate::json_http::Json;
 use crate::{
     api::Api,
-    bridge::{execute, Runtime},
+    bridge::{Runtime, execute},
     gateway,
 };
 use axum::{
+    Router,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
 };
-use rand::RngCore;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use nextjson::NsonDeserialize as Deserialize;
+use nextjson::{Value, json};
+use rand::Rng;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -113,10 +114,10 @@ async fn security_headers(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if request.uri().path().starts_with("/media/") {
-        if let Err(response) = client(&s, request.headers(), false).await {
-            return failure(response.0, response.1);
-        }
+    if request.uri().path().starts_with("/media/")
+        && let Err(response) = client(&s, request.headers(), false).await
+    {
+        return failure(response.0, response.1);
     }
     if request.uri().path().starts_with("/api/")
         && request
@@ -128,14 +129,21 @@ async fn security_headers(
         return failure(StatusCode::FORBIDDEN, "Source mismatch");
     }
     let mut response = next.run(request).await;
-    for (key,value) in [
-        ("x-content-type-options","nosniff"),
-        ("referrer-policy","no-referrer"),
-        ("x-frame-options","DENY"),
-        ("cross-origin-resource-policy","same-origin"),
-        ("cache-control","no-store"),
-        ("content-security-policy","default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"),
-    ] {response.headers_mut().insert(key,HeaderValue::from_static(value));}
+    for (key, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("x-frame-options", "DENY"),
+        ("cross-origin-resource-policy", "same-origin"),
+        ("cache-control", "no-store"),
+        (
+            "content-security-policy",
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        ),
+    ] {
+        response
+            .headers_mut()
+            .insert(key, HeaderValue::from_static(value));
+    }
     response
 }
 fn failure(status: StatusCode, error: &str) -> Response {
@@ -212,7 +220,7 @@ async fn bootstrap(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response
     }
 }
 async fn api_boot(c: &Client) -> Result<Value, String> {
-    serde_json::from_str(&execute(&c.runtime, r#"{"op":"boot"}"#).await?)
+    nextjson::from_str(&execute(&c.runtime, r#"{"op":"boot"}"#).await?)
         .map_err(|_| "Unable to parse the service status".into())
 }
 async fn request(
@@ -261,7 +269,8 @@ async fn media_url(
         return failure(StatusCode::BAD_REQUEST, "Invalid media address");
     }
     let route = if body.image { "img" } else { "stream" };
-    Json(json!({"url":format!("{}/{route}?u={}",s.gateway.origin,percent_encoding::utf8_percent_encode(&body.url,percent_encoding::NON_ALPHANUMERIC))})).into_response()
+    Json(json!({"url":crate::media::gateway_url(&s.gateway.origin, route, &body.url)}))
+        .into_response()
 }
 async fn disconnect(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
     if let Err(r) = client(&s, &headers, true).await {

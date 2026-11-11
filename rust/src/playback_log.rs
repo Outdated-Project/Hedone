@@ -1,12 +1,12 @@
 //! Optional, bounded playback diagnostics. Never write media URLs, credentials or response bodies.
+use nextjson::{NsonDeserialize as Deserialize, NsonSerialize as Serialize};
+use nextjson::{Value, json};
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -46,7 +46,17 @@ pub fn resource_id(raw: &str) -> String {
 }
 
 pub fn error_kind(error: &str) -> &'static str {
-    if error.contains("禁止") || error.contains("只允许") || error.contains("控制字符") {
+    if error.contains("不支持代理") {
+        "proxy_unsupported"
+    } else if error.contains("资源已变化") {
+        "media_version_changed"
+    } else if error.contains("Range") || error.contains("续传范围") || error.contains("媒体范围")
+    {
+        "media_range_error"
+    } else if error.contains("8 MiB 上限") {
+        "response_limit"
+    } else if error.contains("禁止") || error.contains("只允许") || error.contains("控制字符")
+    {
         if error.contains("降级") {
             "https_downgrade_denied"
         } else if error.contains("内网") || error.contains("保留地址") {
@@ -56,7 +66,10 @@ pub fn error_kind(error: &str) -> &'static str {
         }
     } else if error.contains("DNS") {
         "dns_error"
-    } else if error.contains("超时") || error.to_ascii_lowercase().contains("timeout") {
+    } else if error.contains("超时")
+        || error.to_ascii_lowercase().contains("timeout")
+        || error.to_ascii_lowercase().contains("timed out")
+    {
         "timeout"
     } else if error.starts_with("HTTP ") {
         "http_error"
@@ -104,7 +117,10 @@ fn scrub(value: &Value, depth: usize) -> Value {
                     {
                         None
                     } else {
-                        Some((key.chars().take(64).collect(), scrub(v, depth + 1)))
+                        Some((
+                            key.chars().take(64).collect::<String>(),
+                            scrub(v, depth + 1),
+                        ))
                     }
                 })
                 .collect(),
@@ -172,18 +188,18 @@ pub fn bind(dir: &Path) {
         log.dir = Some(dir.to_path_buf());
         log.enabled = fs::read_to_string(dir.join("playback-diagnostics.json"))
             .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|s| nextjson::from_str::<Value>(&s).ok())
             .and_then(|v| v["enabled"].as_bool())
             .unwrap_or(false);
         ENABLED.store(log.enabled, Ordering::Relaxed);
-        if log.enabled {
-            if let Err(e) = log.append(
+        if log.enabled
+            && let Err(e) = log.append(
                 "process.start",
                 json!({"version": env!("CARGO_PKG_VERSION"), "os": std::env::consts::OS}),
                 MAX_FILE,
-            ) {
-                log.error = Some(e);
-            }
+            )
+        {
+            log.error = Some(e);
         }
     }
 }
@@ -192,12 +208,11 @@ pub fn record(event: &str, data: Value) {
     if !enabled() {
         return;
     }
-    if let Ok(mut log) = LOG.lock() {
-        if log.enabled {
-            if let Err(e) = log.append(event, data, MAX_FILE) {
-                log.error = Some(e);
-            }
-        }
+    if let Ok(mut log) = LOG.lock()
+        && log.enabled
+        && let Err(e) = log.append(event, data, MAX_FILE)
+    {
+        log.error = Some(e);
     }
 }
 
@@ -317,11 +332,11 @@ mod tests {
         };
         log.set(true).unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(
+            nextjson::from_str::<Value>(
                 &fs::read_to_string(dir.join("playback-diagnostics.json")).unwrap()
             )
             .unwrap()["enabled"],
-            true
+            Value::Bool(true)
         );
         for _ in 0..5 {
             log.append("test", json!({"count": 1}), 400).unwrap();
@@ -331,10 +346,12 @@ mod tests {
             let text = fs::read_to_string(dir.join(name)).unwrap();
             assert!(text.len() <= 400);
             for line in text.lines() {
-                assert!(serde_json::from_str::<Value>(line).unwrap()["ts"]
-                    .as_str()
-                    .unwrap()
-                    .ends_with('Z'));
+                assert!(
+                    nextjson::from_str::<Value>(line).unwrap()["ts"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with('Z')
+                );
             }
         }
         log.dir = Some(dir.join("missing"));

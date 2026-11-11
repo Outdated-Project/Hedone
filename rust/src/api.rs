@@ -2,7 +2,7 @@
 
 use crate::net::{base, edge};
 use crate::session::SessionStore;
-use serde_json::{json, Value};
+use nextjson::{Value, json};
 
 pub struct Api {
     pub session: SessionStore,
@@ -127,7 +127,7 @@ pub async fn check_update() -> Result<Value, String> {
     }
 
     let bytes = crate::net::read_limited(resp, 1024 * 1024).await?;
-    let v: Value = serde_json::from_slice(&bytes).map_err(|_| "更新元数据无效")?;
+    let v: Value = nextjson::from_slice(&bytes).map_err(|_| "更新元数据无效")?;
     let tag = v
         .get("tag_name")
         .and_then(|x| x.as_str())
@@ -201,7 +201,9 @@ pub async fn api_register(
         "confirm_password": password,
     });
     if !email.trim().is_empty() {
-        body["email"] = json!(email);
+        body.as_object_mut()
+            .unwrap()
+            .insert("email".into(), json!(email));
     }
     let data = edge(
         &origin,
@@ -317,10 +319,10 @@ fn normalize_play_info(info: &mut Value) {
         return;
     };
     for (field, stream) in [("video_url", main), ("video_url_hevc", hevc)] {
-        if let Some(url) = stream {
-            if non_empty(obj.get(field)).is_none() {
-                obj.insert(field.into(), json!(url));
-            }
+        if let Some(url) = stream
+            && non_empty(obj.get(field)).is_none()
+        {
+            obj.insert(field.into(), json!(url));
         }
     }
 }
@@ -343,10 +345,10 @@ pub async fn api_play(state: &Api, id: i64, ep: u32) -> Result<Value, String> {
             normalize_play_info(&mut info);
             info
         });
-    if let Ok(info) = &primary {
-        if has_play_url(info) {
-            return primary;
-        }
+    if let Ok(info) = &primary
+        && has_play_url(info)
+    {
+        return primary;
     }
     match state
         .get(&format!("/api/videos/{id}/play?ep={ep}&page_texts=0"))
@@ -390,7 +392,9 @@ pub async fn api_comment_send(
     let mut body = json!({ "text": text });
     let path = match reply_id {
         Some(rid) if rid > 0 => {
-            body["reply_id"] = json!(rid);
+            body.as_object_mut()
+                .unwrap()
+                .insert("reply_id".into(), json!(rid));
             format!("/api/videos/{id}/comments")
         }
         _ => format!("/api/videos/{id}/comments?ep={ep}"),
@@ -455,7 +459,7 @@ pub async fn api_post_comments(
 #[cfg(test)]
 mod tests {
     use super::{has_play_url, is_newer, normalize_play_info};
-    use serde_json::json;
+    use nextjson::json;
 
     #[test]
     fn new_playback_streams_fill_legacy_url_fields() {
@@ -464,8 +468,14 @@ mod tests {
             "streams": {"main": "https://x/main.m3u8", "hevc": "https://x/hevc.m3u8", "preview": "https://x/p.m3u8"}
         });
         normalize_play_info(&mut info);
-        assert_eq!(info["video_url"], "https://x/main.m3u8");
-        assert_eq!(info["video_url_hevc"], "https://x/hevc.m3u8");
+        assert_eq!(
+            info["video_url"],
+            nextjson::Value::from("https://x/main.m3u8")
+        );
+        assert_eq!(
+            info["video_url_hevc"],
+            nextjson::Value::from("https://x/hevc.m3u8")
+        );
         assert!(has_play_url(&info));
     }
 
@@ -474,7 +484,10 @@ mod tests {
         let mut keep =
             json!({"video_url": "https://old/a.m3u8", "streams": {"main": "https://x/main.m3u8"}});
         normalize_play_info(&mut keep);
-        assert_eq!(keep["video_url"], "https://old/a.m3u8");
+        assert_eq!(
+            keep["video_url"],
+            nextjson::Value::from("https://old/a.m3u8")
+        );
 
         let mut empty = json!({"video_url": "", "streams": {"main": ""}});
         normalize_play_info(&mut empty);

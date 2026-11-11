@@ -1,16 +1,17 @@
 //! Native decoders share this process-local, capability-protected media transport.
 //! No business API, session or arbitrary file access is exposed over HTTP.
+use axum::http;
 use axum::{
+    Router,
     body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
 };
 use futures_util::StreamExt;
-use rand::RngCore;
-use serde::Deserialize;
+use rand::Rng;
+
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -50,7 +51,7 @@ pub async fn start() -> Result<Gateway, String> {
         .with_state(state);
     tokio::spawn(async move {
         if axum::serve(listener, router).await.is_err() {
-            crate::playback_log::record("gateway.stopped", serde_json::json!({}));
+            crate::playback_log::record("gateway.stopped", nextjson::json!({}));
         }
     });
     Ok(Gateway { origin })
@@ -76,17 +77,16 @@ pub(crate) fn web_routes(public_origin: &url::Url, token: String) -> (Gateway, R
     )
 }
 
-#[derive(Deserialize)]
-struct Target {
-    u: String,
-}
-
 async fn serve(
     State(ctx): State<Arc<Context>>,
     Path((token, kind)): Path<(String, String)>,
-    Query(target): Query<Target>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
+    let kind = kind.split('.').next().unwrap_or("");
+    let Some(target) = query.get("u") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     let origin = headers.get("origin").and_then(|h| h.to_str().ok());
     if token != ctx.token
         || headers.get("host").and_then(|h| h.to_str().ok()) != Some(ctx.host.as_str())
@@ -94,7 +94,7 @@ async fn serve(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if target.u.len() > 16384 {
+    if target.len() > 16384 {
         return StatusCode::URI_TOO_LONG.into_response();
     }
     let Ok(permit) = ctx.permits.clone().try_acquire_owned() else {
@@ -102,11 +102,11 @@ async fn serve(
     };
     let mut permit = Some(permit);
     let response = if kind == "stream" {
-        stream(&ctx, &target.u, &headers, permit.take().unwrap()).await
-    } else if ["img", "hls", "seg"].contains(&kind.as_str()) {
+        stream(&ctx, target, &headers, permit.take().unwrap()).await
+    } else if ["img", "hls", "seg"].contains(&kind) {
         let query = format!(
             "u={}",
-            percent_encoding::utf8_percent_encode(&target.u, percent_encoding::NON_ALPHANUMERIC)
+            percent_encoding::utf8_percent_encode(target, percent_encoding::NON_ALPHANUMERIC)
         );
         let response = crate::media::handle(&format!("/{kind}"), &query, &ctx.origin).await;
         Ok(
@@ -132,7 +132,7 @@ async fn serve(
         Err(error) => {
             crate::playback_log::record(
                 "gateway.failed",
-                serde_json::json!({"error_kind":crate::playback_log::error_kind(&error)}),
+                nextjson::json!({"error_kind":crate::playback_log::error_kind(&error)}),
             );
             (
                 StatusCode::BAD_GATEWAY,
@@ -149,33 +149,66 @@ async fn stream(
     headers: &HeaderMap,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<Response, String> {
-    let range = headers.get("range").and_then(|h| h.to_str().ok());
-    if range.is_some_and(|r| r.len() > 100 || !r.starts_with("bytes=") || r.contains(',')) {
+    // Conservatively ignore Range when a client supplies If-Range: returning
+    // the full representation is safe even when its validator has changed.
+    let range = if headers.contains_key("if-range") {
+        None
+    } else {
+        headers.get("range").and_then(|h| h.to_str().ok())
+    };
+    if range.is_some_and(|r| !crate::media_range::valid_range(r)) {
         return Ok(StatusCode::RANGE_NOT_SATISFIABLE.into_response());
     }
     let referer = format!("{}/", crate::net::base());
-    let upstream =
-        crate::net::get_with_range(url, Duration::from_secs(7200), None, Some(&referer), range)
-            .await?;
-    let status = upstream.status();
+    let known_playlist =
+        url::Url::parse(url).is_ok_and(|url| url.path().to_ascii_lowercase().ends_with(".m3u8"));
+    let mut download = if known_playlist {
+        let upstream = crate::net::get(url, Duration::from_secs(20), None, Some(&referer)).await?;
+        crate::media_range::Download {
+            status: upstream.status(),
+            headers: upstream.headers().clone(),
+            url: upstream.url().clone(),
+            body: Box::pin(upstream.bytes_stream()),
+        }
+    } else {
+        let source = url::Url::parse(url).map_err(|_| "无效媒体 URL")?;
+        crate::media_range::open(&source, range, move |target, range, etag| {
+            let referer = referer.clone();
+            async move {
+                crate::net::get_media_range(target.as_str(), &referer, &range, etag.as_deref())
+                    .await
+            }
+        })
+        .await?
+    };
+    let status = download.status;
     if !status.is_success() {
-        return Ok(status.into_response());
+        let mut response = status.into_response();
+        if let Some(value) = download.headers.get("content-range") {
+            response
+                .headers_mut()
+                .insert("content-range", value.clone());
+        }
+        return Ok(response);
     }
-    let ctype = upstream
-        .headers()
+    let ctype = download
+        .headers
         .get("content-type")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let final_url = upstream.url().to_string();
+    let final_url = download.url.to_string();
     let is_hls = ctype.to_ascii_lowercase().contains("mpegurl")
-        || upstream
-            .url()
-            .path()
-            .to_ascii_lowercase()
-            .ends_with(".m3u8");
+        || download.url.path().to_ascii_lowercase().ends_with(".m3u8");
     if is_hls {
-        let bytes = crate::net::read_limited(upstream, 2 * 1024 * 1024).await?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = download.body.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
+                return Err("播放清单超过 2 MiB 上限".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         let text = std::str::from_utf8(&bytes).map_err(|_| "The playlist is not UTF-8")?;
         if !text.trim_start_matches('\u{feff}').starts_with("#EXTM3U") {
             return Err("Invalid playlist".into());
@@ -189,18 +222,30 @@ async fn stream(
     let mut builder = Response::builder()
         .status(status)
         .header("content-type", ctype);
-    for name in ["content-length", "content-range", "accept-ranges"] {
-        if let Some(value) = upstream.headers().get(name) {
+    for name in [
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "etag",
+        "last-modified",
+    ] {
+        if let Some(value) = download.headers.get(name) {
             builder = builder.header(name, value);
         }
     }
     builder
-        .body(Body::from_stream(upstream.bytes_stream().map(
-            move |chunk| {
-                let _keep_alive = &permit;
-                chunk
-            },
-        )))
+        .body(Body::from_stream(download.body.map(move |chunk| {
+            let _keep_alive = &permit;
+            if let Err(error) = &chunk {
+                crate::playback_log::record(
+                    "gateway.body_failed",
+                    nextjson::json!({
+                        "error_kind": crate::playback_log::error_kind(&error.to_string())
+                    }),
+                );
+            }
+            chunk
+        })))
         .map_err(|_| "Unable to construct the media response".into())
 }
 
@@ -291,7 +336,11 @@ mod tests {
     #[tokio::test]
     async fn gateway_rejects_wrong_capability_and_browser_origin() {
         let server = start().await.unwrap();
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let target = url::Url::parse(&server.origin).unwrap();
+        let address = format!("127.0.0.1:{}", target.port().unwrap())
+            .parse()
+            .unwrap();
+        let client = crate::transport::Client::create(&target, &[address], None).unwrap();
         let url = format!("{}/img?u=https%3A%2F%2Fexample.com", server.origin);
         assert_eq!(
             client

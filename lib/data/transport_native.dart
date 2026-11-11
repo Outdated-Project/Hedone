@@ -4,7 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../src/rust/bridge.dart' as bridge;
-import '../src/rust/frb_generated.dart';
+import '../core/native_runtime.dart';
 import 'transport.dart';
 
 Transport createTransport() => NativeTransport();
@@ -17,7 +17,7 @@ class NativeTransport implements Transport {
   @override
   Future<Map<String, dynamic>> initialize() async {
     try {
-      await (_rustReady ??= RustLib.init());
+      await (_rustReady ??= initializeNativeRuntime());
     } catch (_) {
       _rustReady = null;
       rethrow;

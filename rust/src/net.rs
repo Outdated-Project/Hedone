@@ -1,29 +1,9 @@
-//! 网络层：与上游站点对话。
-//!
-//! 站点把全部 `/api/**` 调用收敛成 `POST /api/edge/request` 的信封，
-//! 我们只实现这一个入口，其余接口都是「填 path」。
-//!
-//! # 代理（用户反馈「浏览器能开、HGhub 打不开」的根因就在这里）
-//!
-//! 客户端的流量**全部**走本文件的 reqwest，跟 WebView2 无关，所以它既不共享
-//! 浏览器的代理设置，也不共享浏览器的证书库：
-//!
-//! * reqwest 只有开了 `system-proxy` feature 才会读 Windows 系统代理
-//!   （`HKCU\...\Internet Settings` 的 `ProxyEnable`/`ProxyServer`/`ProxyOverride`）。
-//!   本 crate 用 `default-features = false`，早先漏了这个 feature ⇒ 永远直连，
-//!   只有 TUN/虚拟网卡这种网络层接管才「看起来能用」。
-//! * 即使开了 `system-proxy`，PAC（`AutoConfigURL`）也不被支持，只认固定代理。
-//! * Android 没有注册表可读，系统「Wi-Fi 代理」同样不被 reqwest 采用；
-//!   安卓上只有 VPN/TUN 模式（VpnService 抓全流量）才有效。
-//!
-//! 排查手段：环境变量 `HGHUB_PROXY=http://127.0.0.1:7897` 可强制指定代理，
-//! `net_diag` 命令会输出 DNS/HTTP/环境变量快照。
-
+//! Validated upstream transport: DNS pinning, redirect policy and bounded reads.
 use crate::network_policy;
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
+use nextjson::{Value, json};
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -67,18 +47,15 @@ pub fn trusted_auth_origin(origin: &str) -> bool {
 pub fn bind_base(dir: &std::path::Path) {
     network_policy::bind_security(dir);
     let path = dir.join("line.json");
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<Value>(&text) {
-            if let Some(next) = v
-                .get("base")
-                .and_then(|x| x.as_str())
-                .and_then(normalize_base)
-            {
-                if let Ok(mut cur) = BASE.write() {
-                    *cur = next;
-                }
-            }
-        }
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(v) = nextjson::from_str::<Value>(&text)
+        && let Some(next) = v
+            .get("base")
+            .and_then(|x| x.as_str())
+            .and_then(normalize_base)
+        && let Ok(mut cur) = BASE.write()
+    {
+        *cur = next;
     }
     if let Ok(mut f) = BASE_FILE.write() {
         *f = Some(path);
@@ -109,51 +86,25 @@ pub fn set_base(url: &str) -> Result<String, String> {
     Ok(next)
 }
 
-pub const UA: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+pub const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-/// 手动指定代理（排查 / 公司内网用）：`HGHUB_PROXY=http://127.0.0.1:7897`。
-/// 不设时交给 reqwest 的 `system-proxy` 探测（注册表 + 环境变量）。
-fn proxy_override() -> Option<String> {
-    std::env::var("HGHUB_PROXY")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// 按**当前**系统代理设置新建一个客户端。
-///
-/// 注意：reqwest 的 `system-proxy` 只在构建时读一次注册表 / 环境变量。代理软件被关掉后，
-/// 旧客户端仍会往 `127.0.0.1:7897` 建隧道，症状是满屏 `tunnel error: failed to create
-/// underlying connection`（浏览器却是通的，因为它每次都重读系统代理）。所以这里允许重建。
-fn build_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .referer(false)
-        .gzip(true)
-        .brotli(true)
-        .pool_idle_timeout(Duration::from_secs(60));
-    if !addrs.is_empty() {
-        builder = builder.resolve_to_addrs(host, addrs);
-    }
-    if let Some(p) = proxy_override() {
-        let proxy = reqwest::Proxy::all(&p).map_err(|_| "HGHUB_PROXY 配置无效（已隐藏原始值）")?;
-        builder = builder.proxy(proxy);
-    }
-    builder
-        .build()
-        .map_err(|_| "无法创建 HTTP 客户端".to_string())
+/// Construct a fresh transport after DNS validation; proxy policy is isolated.
+fn build_client(
+    target: &url::Url,
+    addrs: &[SocketAddr],
+) -> Result<crate::transport::Client, String> {
+    crate::transport::Client::create(target, addrs, crate::proxy::for_url(target)?)
 }
 
 const CLIENT_TTL: Duration = Duration::from_secs(30);
-type ClientCache = HashMap<String, (Instant, Arc<reqwest::Client>)>;
+type ClientCache = HashMap<String, (Instant, Arc<crate::transport::Client>)>;
 static CLIENTS: Lazy<Mutex<ClientCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn cached_client(cache: &ClientCache, key: &str, now: Instant) -> Option<Arc<reqwest::Client>> {
+fn cached_client(
+    cache: &ClientCache,
+    key: &str,
+    now: Instant,
+) -> Option<Arc<crate::transport::Client>> {
     cache
         .get(key)
         .filter(|(expires, _)| now < *expires)
@@ -162,30 +113,39 @@ fn cached_client(cache: &ClientCache, key: &str, now: Instant) -> Option<Arc<req
 
 /// 缓存按模式、主机和端口隔离；有效期内仅复用已经检查并固定地址的客户端。
 /// 到期后重新检查全部 DNS 答案，不使用旧连接绕过新的目标检查。
-async fn client_for(raw: &str) -> Result<(url::Url, Arc<reqwest::Client>), String> {
+async fn client_for(raw: &str) -> Result<(url::Url, Arc<crate::transport::Client>), String> {
     let strict = network_policy::strict_security();
     let target = network_policy::parse_target_with_mode(raw, strict)?;
     let host = target.host_str().ok_or("目标缺少主机名")?;
     let port = target.port_or_known_default().ok_or("目标端口无效")?;
-    let key = format!("{strict}:{host}:{port}");
+    let key = format!("{strict}:{}:{host}:{port}", target.scheme());
     {
         let cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
         if let Some(http) = cached_client(&cache, &key, Instant::now()) {
             return Ok((target, http));
         }
     }
-    let addrs = if strict {
-        network_policy::resolve_target(&target, strict).await?
-    } else {
-        Vec::new()
-    };
-    let http = Arc::new(build_client(host, &addrs)?);
+    let addrs = network_policy::resolve_target(&target, strict).await?;
+    static BUILDERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+    let permit = BUILDERS
+        .acquire()
+        .await
+        .map_err(|_| "HTTP client builder unavailable")?;
+    let owned_target = target.clone();
+    let http = Arc::new(
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            build_client(&owned_target, &addrs)
+        })
+        .await
+        .map_err(|_| "HTTP client builder failed")??,
+    );
     let now = Instant::now();
     let mut cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
     let http = cached_client(&cache, &key, now).unwrap_or(http);
     if !cache.get(&key).is_some_and(|(expires, _)| now < *expires) {
         cache.retain(|_, (expires, _)| now < *expires);
-        if cache.len() >= 64 {
+        if cache.len() >= 16 {
             cache.clear();
         }
         cache.insert(key, (now + CLIENT_TTL, http.clone()));
@@ -205,17 +165,34 @@ pub async fn get(
     timeout: Duration,
     accept: Option<&str>,
     referer: Option<&str>,
-) -> Result<reqwest::Response, String> {
-    get_with_range(raw, timeout, accept, referer, None).await
+) -> Result<crate::transport::Response, String> {
+    get_request(raw, timeout, accept, referer, None, None).await
 }
 
-pub async fn get_with_range(
+pub(crate) async fn get_media_range(
+    raw: &str,
+    referer: &str,
+    range: &str,
+    etag: Option<&str>,
+) -> Result<crate::transport::Response, String> {
+    get_request(
+        raw,
+        Duration::from_secs(20),
+        None,
+        Some(referer),
+        Some(range),
+        etag,
+    )
+    .await
+}
+async fn get_request(
     raw: &str,
     timeout: Duration,
     accept: Option<&str>,
     referer: Option<&str>,
     range: Option<&str>,
-) -> Result<reqwest::Response, String> {
+    if_match: Option<&str>,
+) -> Result<crate::transport::Response, String> {
     tokio::time::timeout(timeout, async {
         let policy_error = |phase: &str, error: String| {
             crate::playback_log::record("network.target_failed", json!({"resource": crate::playback_log::resource_id(raw), "phase": phase, "error_kind": crate::playback_log::error_kind(&error)}));
@@ -227,6 +204,7 @@ pub async fn get_with_range(
             let (target, http) = client_for(next.as_str()).await.map_err(|e| policy_error("dns_or_client", e))?;
             crate::playback_log::record("network.target_ready", json!({"resource": crate::playback_log::resource_id(raw), "target_resource": crate::playback_log::resource_id(target.as_str()), "dns_or_client_ms": resolving.elapsed().as_millis() as u64, "hop": hop}));
             let mut request = http.get(target.clone()).timeout(timeout);
+            if let Some(etag) = if_match { request = request.header("If-Match", etag); }
             if let Some(value) = accept {
                 request = request.header("Accept", value);
             }
@@ -243,7 +221,7 @@ pub async fn get_with_range(
             }
             let location = response
                 .headers()
-                .get(reqwest::header::LOCATION)
+                .get(crate::transport::header::LOCATION)
                 .and_then(|h| h.to_str().ok())
                 .ok_or("重定向缺少有效 Location")?;
             next = network_policy::redirect_target(&target, location).map_err(|e| policy_error("redirect", e))?;
@@ -295,20 +273,18 @@ pub fn heal_client(reason: &str) {
         Ok(l) => l,
         Err(_) => return,
     };
-    if let Some(t) = *last {
-        if t.elapsed() < Duration::from_secs(3) {
-            return;
-        }
+    if let Some(t) = *last
+        && t.elapsed() < Duration::from_secs(3)
+    {
+        return;
     }
     *last = Some(Instant::now());
     drop(last);
     refresh_client();
 }
 
-/// reqwest 的 `Display` 只有「error sending request for url (...)」，
-/// 真正的原因（dns error / connection refused / invalid peer certificate）
-/// 藏在 `source()` 链里。展开成一行，界面和 debug.log 才有排查价值。
-pub fn err_text(e: &reqwest::Error) -> String {
+/// Flatten transport errors for diagnostics.
+pub fn err_text(e: &crate::transport::Error) -> String {
     let mut out = e.to_string();
     let mut src = std::error::Error::source(e);
     while let Some(s) = src {
@@ -353,36 +329,63 @@ pub async fn diagnose() -> Value {
         Err(error) => json!({ "error": error }),
     };
 
-    let started = Instant::now();
-    let http = match get(&format!("{cur}/"), Duration::from_secs(20), None, None).await {
-        Ok(r) => json!({
-            "status": r.status().as_u16(),
-            "ms": started.elapsed().as_millis() as u64,
-        }),
-        Err(e) => json!({
-            "error": e,
-            "ms": started.elapsed().as_millis() as u64,
-        }),
-    };
+    let http = probe_content(&cur, Duration::from_secs(20)).await;
 
     json!({
         "base": cur,
         "host": host,
         "dns": dns,
         "resolver": crate::dns::diagnostics(),
+        "transport": {"library": "Courierust 1.1.2 (crates.io)", "pinned_direct": true, "address_fallback": true, "proxy": false, "upstream_streaming": false, "progressive_range": true, "range_window_bytes": crate::media_range::WINDOW, "max_response_bytes": 8 * 1024 * 1024, "max_in_flight": 4, "max_idle_connections": 8},
         "http": http,
         "env": {
             "HTTP_PROXY": std::env::var("HTTP_PROXY").ok().map(|p| redact_proxy(&p)),
             "HTTPS_PROXY": std::env::var("HTTPS_PROXY").ok().map(|p| redact_proxy(&p)),
             "ALL_PROXY": std::env::var("ALL_PROXY").ok().map(|p| redact_proxy(&p)),
             "NO_PROXY": std::env::var("NO_PROXY").ok().map(|_| "[已配置，列表已隐藏]"),
-            "HGHUB_PROXY": proxy_override().map(|p| redact_proxy(&p)),
+            "HGHUB_PROXY": std::env::var("HGHUB_PROXY").ok().map(|p| redact_proxy(&p)),
         },
     })
 }
 
+/// A reachable landing page does not establish that a line serves content.
+/// Probe the same guest envelope as discovery, without credentials or writes.
+pub(crate) async fn probe_content(origin: &str, timeout: Duration) -> Value {
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        timeout,
+        edge(origin, "GET", "/api/videos?page=1&size=1", None, None),
+    )
+    .await
+    .unwrap_or_else(|_| Err("内容接口检测超时".into()));
+    content_probe_result(result, started.elapsed().as_millis() as u64)
+}
+
+fn content_probe_result(result: Result<Value, String>, ms: u64) -> Value {
+    match result {
+        Ok(value) if value.get("items").and_then(Value::as_array).is_some() => {
+            json!({"ok": true, "probe": "content_api", "ms": ms})
+        }
+        Ok(_) => json!({"ok": false, "probe": "content_api", "ms": ms,
+            "error": "内容接口返回了无法识别的数据"}),
+        Err(error) => {
+            let status = error
+                .strip_prefix("HTTP ")
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse::<u16>().ok())
+                .filter(|code| (100..600).contains(code));
+            if let Some(status) = status {
+                // Keep the status, not an upstream HTML error document.
+                json!({"ok": false, "probe": "content_api", "ms": ms, "status": status})
+            } else {
+                json!({"ok": false, "probe": "content_api", "ms": ms, "error": error})
+            }
+        }
+    }
+}
+
 fn retryable_error(error: &str) -> bool {
-    if error == "401" {
+    if error == "401" || error.contains("当前 Courierust") {
         return false;
     }
     if let Some(status) = error
@@ -402,8 +405,7 @@ fn retryable_error(error: &str) -> bool {
 }
 
 /// 只重试可能恢复的错误；404/权限错误/安全拒绝直接结束，避免无效等待。
-/// 站点偶发 TLS 抖动；碰上代理隧道错误就先重建客户端再试
-/// （代理软件开关后旧客户端会一直卡在 tunnel error 上）。
+/// 可恢复的传输错误重建地址配置后重试；库能力限制不重试。
 async fn with_retry<F, Fut, T>(retry: bool, mut f: F) -> Result<T, String>
 where
     F: FnMut() -> Fut,
@@ -490,7 +492,7 @@ pub async fn edge(
     }
     let (encoded, ctype) = match &body {
         Some(v) => (
-            B64.encode(serde_json::to_vec(v).map_err(|e| e.to_string())?),
+            B64.encode(nextjson::to_vec(v).map_err(|e| e.to_string())?),
             "application/json",
         ),
         None => (String::new(), ""),
@@ -544,17 +546,16 @@ pub async fn edge(
                         .post(target.clone())
                         .header("Accept", "application/json")
                         .header("Referer", &referer)
-                        .json(&envelope);
-                    if let Some(t) = token.as_deref() {
-                        if !t.is_empty() {
+                        .header("content-type", "application/json").body(envelope.to_string());
+                    if let Some(t) = token.as_deref()
+                        && !t.is_empty() {
                             req = req.header("Authorization", format!("Bearer {t}"));
                         }
-                    }
                     let resp = req.send().await.map_err(|e| err_text(&e))?;
                     let status = resp.status();
                     status_code = Some(status.as_u16());
                     headers_ms = Some(started.elapsed().as_millis() as u64);
-                    let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+                    let ctype = resp.headers().get(crate::transport::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
                     response_kind = if ctype.contains("json") { "json" } else if ctype.contains("html") { "html" } else { "other" };
                     gateway = if resp.headers().contains_key("x-amz-cf-id") { "cloudfront" } else if resp.headers().contains_key("cf-ray") { "cloudflare" } else { "other" };
                     if status.is_redirection() {
@@ -563,7 +564,7 @@ pub async fn edge(
                         }
                         let location = resp
                             .headers()
-                            .get(reqwest::header::LOCATION)
+                            .get(crate::transport::header::LOCATION)
                             .and_then(|h| h.to_str().ok())
                             .ok_or("重定向缺少有效 Location")?;
                         next = edge_redirect_target(&target, status.as_u16(), location, guest_get)?;
@@ -583,7 +584,7 @@ pub async fn edge(
                     if text.trim().is_empty() {
                         return Ok(Value::Null);
                     }
-                    return serde_json::from_str::<Value>(&text)
+                    return nextjson::from_str::<Value>(&text)
                         .map_err(|e| format!("{e}: {}", text.chars().take(160).collect::<String>()));
                 }
                 Err("重定向次数超过限制".into())
@@ -657,7 +658,7 @@ pub(crate) async fn fetch_resource(url: &str) -> Result<Resource, String> {
                 }
                 let ctype = resp
                     .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
+                    .get(crate::transport::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
                 let resolved = resp.url().to_string();
@@ -672,7 +673,7 @@ pub(crate) async fn fetch_resource(url: &str) -> Result<Resource, String> {
 }
 
 pub async fn read_limited(
-    mut response: reqwest::Response,
+    mut response: crate::transport::Response,
     limit: usize,
 ) -> Result<Vec<u8>, String> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
@@ -692,6 +693,34 @@ pub async fn read_limited(
 mod tests {
     use super::*;
 
+    #[test]
+    fn content_probe_requires_a_list_and_preserves_failure_categories() {
+        assert_eq!(
+            content_probe_result(Ok(json!({"items": []})), 7)["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            content_probe_result(Ok(json!({"message": "welcome"})), 7)["ok"],
+            json!(false)
+        );
+        let missing =
+            content_probe_result(Err("HTTP 404 Not Found: <html>landing</html>".into()), 7);
+        assert_eq!(missing["status"], json!(404));
+        assert_eq!(missing["ok"], json!(false));
+        assert!(!missing.to_string().contains("<html>"));
+        let tls = content_probe_result(
+            Err("TLS certificate error: no trusted root found".into()),
+            7,
+        );
+        assert_eq!(tls["ok"], json!(false));
+        assert!(
+            tls["error"]
+                .as_str()
+                .unwrap()
+                .contains("no trusted root found")
+        );
+    }
+
     #[tokio::test]
     async fn terminal_errors_do_not_retry_but_transient_failures_can_recover() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -703,12 +732,14 @@ mod tests {
             "重定向次数超过限制",
         ] {
             let calls = AtomicUsize::new(0);
-            assert!(with_retry(true, || async {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err::<(), _>(error.to_string())
-            })
-            .await
-            .is_err());
+            assert!(
+                with_retry(true, || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(error.to_string())
+                })
+                .await
+                .is_err()
+            );
             assert_eq!(calls.load(Ordering::SeqCst), 1, "{error}");
         }
         for error in ["HTTP 503 Service Unavailable", "请求超时"] {
@@ -779,7 +810,7 @@ mod tests {
     #[test]
     fn pinned_clients_expire_without_extending_the_dns_ttl() {
         let now = Instant::now();
-        let client = Arc::new(reqwest::Client::new());
+        let client = Arc::new(crate::transport::Client::new());
         let mut cache = ClientCache::new();
         cache.insert(
             "true:example.com:443".into(),
@@ -903,7 +934,7 @@ mod tests {
     async fn diag() {
         println!(
             "{}",
-            serde_json::to_string_pretty(&diagnose().await).expect("json")
+            nextjson::to_string_pretty(&diagnose().await).expect("json")
         );
     }
 }

@@ -1,5 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
+import '../core/fullscreen_session.dart';
+import '../ui/cinema_layout.dart';
+
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -45,6 +50,14 @@ class _DetailScreenState extends State<DetailScreen> {
   int _episode = 1;
   int? _preparedFor;
   final _videoKey = GlobalKey();
+  final _presentation = FullscreenSession();
+  Future<void> _setFullscreen(bool value) async {
+    await perform(context, () async {
+      await _presentation.set(value);
+      if (mounted) setState(() => _fullscreen = value);
+    });
+  }
+
   int _identity = 0, _loadGeneration = 0;
   bool get _collected => widget.model.user == null
       ? widget.model.favorites.containsKey(widget.item.id)
@@ -55,6 +68,11 @@ class _DetailScreenState extends State<DetailScreen> {
     _identity = widget.model.identityRevision;
     widget.model.addListener(_identityChanged);
     _fullscreen = widget.immersive;
+    if (_fullscreen && !kIsWeb) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_setFullscreen(true));
+      });
+    }
     _detail = _fetch();
     _session = PlaybackSession(widget.model.repository)..onCompleted = _next;
     _session.position.addListener(_prepareFollowing);
@@ -170,6 +188,7 @@ class _DetailScreenState extends State<DetailScreen> {
     _historyTimer?.cancel();
     _session.position.removeListener(_prepareFollowing);
     _keyboard.dispose();
+    unawaited(_presentation.close());
     unawaited(_save());
     unawaited(_session.close());
     super.dispose();
@@ -261,7 +280,7 @@ class _DetailScreenState extends State<DetailScreen> {
   Widget build(BuildContext context) => PopScope(
     canPop: !_fullscreen,
     onPopInvokedWithResult: (didPop, result) {
-      if (!didPop) setState(() => _fullscreen = false);
+      if (!didPop) unawaited(_setFullscreen(false));
     },
     child: Scaffold(
       appBar: _fullscreen
@@ -452,89 +471,83 @@ class _DetailScreenState extends State<DetailScreen> {
         context,
         ColoredBox(
           color: Colors.black,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 4,
-                ),
-                child: Row(
-                  children: [
-                    M3EIconButton(
-                      icon: const Icon(Icons.arrow_back_rounded),
-                      tooltip: '返回详情',
-                      onPressed: () => setState(() => _fullscreen = false),
+          child: CinemaLayout(
+            header: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Row(
+                children: [
+                  M3EIconButton(
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    tooltip: '返回详情',
+                    onPressed: () => unawaited(_setFullscreen(false)),
+                  ),
+                  Expanded(
+                    child: Text(
+                      widget.item.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
                     ),
-                    Expanded(
-                      child: Text(
-                        widget.item.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ),
-                    M3EButton(
-                      onPressed: _chooseEpisode,
-                      label: const Text('选集'),
-                      style: M3EButtonStyle.tonal,
-                    ),
-                  ],
-                ),
+                  ),
+                  M3EButton(
+                    onPressed: _chooseEpisode,
+                    label: const Text('选集'),
+                    style: M3EButtonStyle.tonal,
+                  ),
+                ],
               ),
-              Expanded(
-                child: FutureBuilder<VideoDetail>(
-                  future: _detail,
-                  builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return StatusPane(
-                        loading: !snapshot.hasError,
-                        error: snapshot.error?.toString(),
-                        onRetry: () => setState(() => _detail = _fetch()),
-                      );
-                    }
-                    return EpisodePager(
-                      episodes: _loaded?.episodes ?? const [],
-                      selected: _episode,
-                      onSelect: (ep) => unawaited(_play(ep)),
-                      onPrepare: (ep) =>
-                          unawaited(_session.prepareNext(widget.item.id, ep)),
-                      video: _started
-                          ? RepaintBoundary(
-                              child: Video(
-                                key: _videoKey,
-                                controller: _session.video,
-                                controls: NoVideoControls,
-                              ),
-                            )
-                          : _surface(),
-                      placeholder: (context, episode) => Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Poster(
-                            repository: widget.model.repository,
-                            url: widget.item.cover,
-                            fit: BoxFit.contain,
+            ),
+            video: FutureBuilder<VideoDetail>(
+              future: _detail,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return StatusPane(
+                    loading: !snapshot.hasError,
+                    error: snapshot.error?.toString(),
+                    onRetry: () => setState(() => _detail = _fetch()),
+                  );
+                }
+                return EpisodePager(
+                  episodes: _loaded?.episodes ?? const [],
+                  selected: _episode,
+                  onSelect: (ep) => unawaited(_play(ep)),
+                  onPrepare: (ep) =>
+                      unawaited(_session.prepareNext(widget.item.id, ep)),
+                  video: _started
+                      ? RepaintBoundary(
+                          child: Video(
+                            key: _videoKey,
+                            controller: _session.video,
+                            controls: NoVideoControls,
                           ),
-                          Align(
-                            alignment: Alignment.bottomCenter,
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: M3EChip(label: '第 ${episode.number} 集'),
-                            ),
-                          ),
-                        ],
+                        )
+                      : _surface(),
+                  placeholder: (context, episode) => Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Poster(
+                        repository: widget.model.repository,
+                        url: widget.item.cover,
+                        fit: BoxFit.contain,
                       ),
-                    );
-                  },
-                ),
-              ),
-              if (_started)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: _controls(),
-                ),
-            ],
+                      Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: M3EChip(label: '第 ${episode.number} 集'),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            controls: _started
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: _controls(),
+                  )
+                : const SizedBox.shrink(),
           ),
         ),
       ),
@@ -550,7 +563,7 @@ class _DetailScreenState extends State<DetailScreen> {
             (_loaded?.episodes.last.number != _episode)
         ? _next
         : null,
-    onFullscreen: () => setState(() => _fullscreen = !_fullscreen),
+    onFullscreen: () => unawaited(_setFullscreen(!_presentation.active)),
     fullscreen: _fullscreen,
     onRetry: () => _play(_episode, fresh: true),
   );

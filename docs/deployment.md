@@ -62,7 +62,7 @@ Flutter 引导文件显式将 CanvasKit 指向随包的 `canvaskit/`。即使手
 | `HGHUB_PUBLIC_ORIGIN` | 浏览器实际访问的完整 origin，默认 `http://127.0.0.1:8080` |
 | `HGHUB_WEB_DIR` | Flutter Web 产物目录 |
 | `HGHUB_DATA_DIR` | Rust 服务配置目录，默认 `.hghub-data` |
-| `HGHUB_PROXY` | 显式 HTTP(S) 代理；不设置时按平台读取代理配置 |
+| `HGHUB_PROXY` | 保留代理配置检测；当前官方 Courierust 适配器不支持应用代理，选中代理后明确报错且不自动直连 |
 
 密钥用密码管理器或系统随机源生成，不提交到仓库，不放在前端构建变量或 URL 里。开发时在当前 shell 设置环境变量，然后运行服务；浏览器打开配置的 origin。
 

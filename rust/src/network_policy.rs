@@ -1,10 +1,10 @@
 //! 不可信目标的连接策略。FakeIP 是明确例外，不能把它当作普通私网拒绝。
+use nextjson::{Value, json};
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use url::{Host, Url};
 
 /// 解析命令行参数与环境变量中的严格安全模式覆盖项。
@@ -51,14 +51,12 @@ pub fn strict_security() -> bool {
 
 pub fn bind_security(dir: &Path) {
     let path = dir.join("security.json");
-    if cli_strict_override().is_none() {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                if let Some(strict) = v.get("strict").and_then(|x| x.as_bool()) {
-                    STRICT.store(strict, Ordering::Relaxed);
-                }
-            }
-        }
+    if cli_strict_override().is_none()
+        && let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(v) = nextjson::from_str::<Value>(&text)
+        && let Some(strict) = v.get("strict").and_then(|x| x.as_bool())
+    {
+        STRICT.store(strict, Ordering::Relaxed);
     }
     if let Ok(mut f) = SECURITY_FILE.write() {
         *f = Some(path);
@@ -178,9 +176,8 @@ pub fn check_addresses_with_mode(addrs: &[SocketAddr], strict: bool) -> Result<(
     Ok(())
 }
 
-/// 与浏览器一致优先 IPv6：连接器以首个地址的协议族为首选，另一族在其失败后（Happy Eyeballs）兜底。
-/// 普通排序会把 IPv4 排在前面；共享 IPv4 出口被上游接口限流时，请求会挂起或返回 502/503，
-/// 而同一网络下浏览器走 IPv6 一切正常。
+/// 将地址稳定排序后去重；连接族的选择由 transport 决定。
+/// 当前适配器交错尝试 IPv6 / IPv4，并记住最近连接成功的地址；不实现并行竞速。
 fn sort_ipv6_first(addrs: &mut [SocketAddr]) {
     addrs.sort_unstable_by_key(|addr| (addr.is_ipv4(), *addr));
 }
@@ -232,8 +229,8 @@ mod tests {
         let previous = SECURITY_FILE.write().unwrap().replace(path.clone());
         let before = strict_security();
         set_strict_security(before).unwrap();
-        let saved: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(saved["strict"], before);
+        let saved: Value = nextjson::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(saved["strict"], Value::Bool(before));
         *SECURITY_FILE.write().unwrap() = Some(dir.join("missing/security.json"));
         assert!(set_strict_security(!before).is_err());
         assert_eq!(strict_security(), before);

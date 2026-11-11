@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,6 +6,9 @@ import '../core/app_model.dart';
 import '../data/models.dart';
 import '../ui/design.dart';
 import '../ui/feedback.dart';
+import '../ui/action_list_item.dart';
+import 'lines.dart';
+import 'network_diagnostics.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({required this.model, super.key});
@@ -17,7 +18,8 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _busy = false, _logs = false;
+  final Set<String> _pending = {};
+  bool _logs = false;
   @override
   void initState() {
     super.initState();
@@ -29,11 +31,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         .catchError((Object _) {});
   }
 
-  Future<void> _run(Future<void> Function() action) async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    await perform(context, action);
-    if (mounted) setState(() => _busy = false);
+  Future<void> _run(String operation, Future<void> Function() action) async {
+    if (!_pending.add(operation)) return;
+    setState(() {});
+    try {
+      await perform(context, action);
+    } finally {
+      if (mounted) setState(() => _pending.remove(operation));
+    }
   }
 
   Future<void> _text(String title, String content) => M3EDialog.show(
@@ -69,8 +74,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       text.writeln(await rootBundle.loadString('assets/fonts/$font-OFL.txt'));
     }
     for (final entry in {
-      'RecurseX 0.2.4': 'recurse-x',
-      'Courierust 1.1.1': 'courierust',
+      'RecurseX 0.2.5': 'recurse-x',
+      'Courierust 1.1.2': 'courierust',
       'NextJson 0.1.5 / RustBinary 0.1.10': 'apache-2.0',
       'Mozilla CA certificate bundle': 'mozilla-mpl-2.0',
     }.entries) {
@@ -212,33 +217,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 padding: EdgeInsets.all(12),
                                 child: Text('Web 线路由 Rust 服务管理员配置。'),
                               ),
-                            M3EListItem(
+                            ActionListItem(
                               headline: '网络自检',
-                              supportingText: '查看 DNS、代理及接口连通状态',
-                              leading: const Icon(Icons.network_check_rounded),
-                              enabled: !_busy,
-                              onTap: () => _run(() async {
-                                final result = await model.repository.call(
-                                  'net_diag',
-                                );
-                                if (context.mounted) {
-                                  await _text(
-                                    '网络自检',
-                                    const JsonEncoder.withIndent('  ')
-                                        .convert(result),
-                                  );
-                                }
-                              }),
+                              supportingText: '检查域名解析与安全连接',
+                              icon: Icons.network_check_rounded,
+                              onTap: () => AuroraMotion.open(
+                                context,
+                                NetworkDiagnosticsScreen(
+                                  repository: model.repository,
+                                ),
+                              ),
                             ),
                             if (!kIsWeb)
-                              M3EListItem(
+                              ActionListItem(
                                 headline: '清理媒体缓存',
                                 supportingText: '保留账号、收藏与观看历史',
-                                leading: const Icon(
-                                  Icons.cleaning_services_outlined,
-                                ),
-                                enabled: !_busy,
-                                onTap: () => _run(() async {
+                                icon: Icons.cleaning_services_outlined,
+                                busy: _pending.contains('cache'),
+                                onTap: () => _run('cache', () async {
                                   await model.repository.call('cache_clear');
                                   PaintingBinding.instance.imageCache.clear();
                                   model.repository.invalidate();
@@ -256,9 +252,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 supportingText: '默认关闭；记录经过脱敏的播放事件',
                                 trailing: M3ESwitch(
                                   value: _logs,
-                                  onChanged: _busy
+                                  onChanged: _pending.contains('logging')
                                       ? null
-                                      : (v) => _run(() async {
+                                      : (v) => _run('logging', () async {
                                           await model.repository.call(
                                             'log_set',
                                             {'enabled': v},
@@ -270,13 +266,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                               ),
                             if (!kIsWeb)
-                              M3EListItem(
+                              ActionListItem(
                                 headline: '查看诊断日志',
-                                leading: const Icon(
-                                  Icons.receipt_long_outlined,
-                                ),
-                                enabled: !_busy,
-                                onTap: () => _run(() async {
+                                icon: Icons.receipt_long_outlined,
+                                busy: _pending.contains('logs'),
+                                onTap: () => _run('logs', () async {
                                   final value = await model.repository.call(
                                     'log_read',
                                   );
@@ -306,37 +300,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                               ),
                             ),
-                            M3EListItem(
+                            ActionListItem(
                               headline: '检查更新',
-                              leading: const Icon(
-                                Icons.system_update_alt_rounded,
-                              ),
-                              enabled: !_busy,
-                              onTap: () => _run(_update),
+                              icon: Icons.system_update_alt_rounded,
+                              busy: _pending.contains('update'),
+                              onTap: () => _run('update', _update),
                             ),
                             M3EListItem(
                               headline: '仅限非商业用途',
                               supportingText:
                                   'PolyForm Noncommercial License 1.0.0',
                               leading: const Icon(Icons.gpp_good_outlined),
-                              onTap: () => _run(_license),
+                              onTap: () => _run('license', _license),
                             ),
                             M3EListItem(
                               headline: '第三方软件许可',
                               leading: const Icon(Icons.description_outlined),
-                              onTap: () => _run(_dependencies),
+                              onTap: () => _run('licenses', _dependencies),
                             ),
                           ],
                         ),
                       ),
-                      if (_busy)
-                        const Center(
-                          child: SizedBox(
-                            width: 36,
-                            height: 36,
-                            child: M3ELoadingIndicator(),
-                          ),
-                        ),
                       Padding(
                         padding: const EdgeInsets.all(12),
                         child: Text(
@@ -354,177 +338,5 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     },
-  );
-}
-
-class LinesScreen extends StatefulWidget {
-  const LinesScreen({required this.model, super.key});
-  final AppModel model;
-  @override
-  State<LinesScreen> createState() => _LinesScreenState();
-}
-
-class _LinesScreenState extends State<LinesScreen> {
-  late Future<Json> _lines;
-  List<Json> _mirrors = [];
-  final Map<String, String> _latency = {};
-  bool _busy = false;
-  @override
-  void initState() {
-    super.initState();
-    _lines = widget.model.repository.call('line_state');
-  }
-
-  Future<void> _select(String url) async {
-    if (url == widget.model.base || _busy) return;
-    final approved = await M3EDialog.show<bool>(
-      context,
-      dialog: M3EDialog(
-        title: '切换数据线路？',
-        content: Text('将退出当前账号并重新加载内容。\n$url'),
-        actions: [
-          M3EButton(
-            onPressed: () => Navigator.pop(context, false),
-            label: const Text('取消'),
-            style: M3EButtonStyle.text,
-          ),
-          M3EButton(
-            onPressed: () => Navigator.pop(context, true),
-            label: const Text('切换'),
-          ),
-        ],
-      ),
-    );
-    if (approved != true || !mounted) return;
-    setState(() => _busy = true);
-    await perform(context, () => widget.model.setLine(url));
-    if (mounted) setState(() => _busy = false);
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: const M3EAppBar.top(
-      titleText: '数据线路',
-      automaticallyImplyLeading: true,
-    ),
-    body: FutureBuilder<Json>(
-      future: _lines,
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return StatusPane(
-            loading: !snapshot.hasError,
-            error: snapshot.error?.toString(),
-            onRetry: () => setState(
-              () => _lines = widget.model.repository.call('line_state'),
-            ),
-          );
-        }
-        final fixed = objects(snapshot.data!['fixed']);
-        final all = [...fixed, ..._mirrors];
-        return ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            const Text('固定线路可登录账号。镜像只用于游客浏览，不会接收你的账号凭据。'),
-            const SizedBox(height: 16),
-            for (final line in all)
-              M3EListItem(
-                headline: string(line['name']).isEmpty
-                    ? string(line['host'])
-                    : string(line['name']),
-                supportingText: string(line['url']),
-                selected: widget.model.base == line['url'],
-                enabled: !_busy,
-                leading: Icon(
-                  widget.model.base == line['url']
-                      ? Icons.check_circle_rounded
-                      : Icons.language_rounded,
-                ),
-                trailingText: _latency[string(line['url'])],
-                onTap: () => _select(string(line['url'])),
-              ),
-            const SizedBox(height: 24),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                M3EButton(
-                  onPressed: _busy
-                      ? null
-                      : () async {
-                          setState(() => _busy = true);
-                          await perform(context, () async {
-                            final value = await widget.model.repository.call(
-                              'line_mirrors',
-                            );
-                            if (context.mounted) {
-                              setState(
-                                () => _mirrors = objects(value['items']),
-                              );
-                            }
-                          });
-                          if (mounted) setState(() => _busy = false);
-                        },
-                  label: const Text('刷新镜像'),
-                  style: M3EButtonStyle.tonal,
-                ),
-                M3EButton(
-                  onPressed: _busy
-                      ? null
-                      : () async {
-                          setState(() => _busy = true);
-                          await perform(context, () async {
-                            final value = await widget.model.repository.call(
-                              'line_probe',
-                              {
-                                'urls': all
-                                    .take(16)
-                                    .map((e) => string(e['url']))
-                                    .toList(),
-                              },
-                            );
-                            if (context.mounted) {
-                              setState(() {
-                                for (final line in objects(value['items'])) {
-                                  _latency[string(
-                                    line['url'],
-                                  )] = line['ok'] == true
-                                      ? '${number(line['ms'])} ms'
-                                      : '不可用';
-                                }
-                              });
-                              await M3EDialog.show(
-                                context,
-                                dialog: M3EDialog(
-                                  title: '线路检测',
-                                  content: SelectableText(
-                                    const JsonEncoder.withIndent('  ')
-                                        .convert(value),
-                                  ),
-                                ),
-                              );
-                            }
-                          });
-                          if (mounted) setState(() => _busy = false);
-                        },
-                  label: const Text('检测前 16 条线路'),
-                  style: M3EButtonStyle.tonal,
-                ),
-              ],
-            ),
-            if (_busy)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(
-                  child: SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: M3ELoadingIndicator(),
-                  ),
-                ),
-              ),
-          ],
-        );
-      },
-    ),
   );
 }

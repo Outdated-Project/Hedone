@@ -1,5 +1,9 @@
 import 'dart:async';
 
+import '../core/fullscreen_session.dart';
+import '../ui/feedback.dart';
+import '../ui/cinema_layout.dart';
+
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../core/playback_session.dart';
@@ -22,6 +26,14 @@ class PostVideoScreen extends StatefulWidget {
 
 class _PostVideoScreenState extends State<PostVideoScreen> {
   bool _cinema = false;
+  final _presentation = FullscreenSession();
+  Future<void> _setFullscreen(bool value) async {
+    await perform(context, () async {
+      await _presentation.set(value);
+      if (mounted) setState(() => _cinema = value);
+    });
+  }
+
   late final PlaybackSession _session;
   @override
   void initState() {
@@ -34,6 +46,7 @@ class _PostVideoScreenState extends State<PostVideoScreen> {
   @override
   void dispose() {
     unawaited(_session.close());
+    unawaited(_presentation.close());
     super.dispose();
   }
 
@@ -41,7 +54,7 @@ class _PostVideoScreenState extends State<PostVideoScreen> {
   Widget build(BuildContext context) => PopScope(
     canPop: !_cinema,
     onPopInvokedWithResult: (didPop, _) {
-      if (!didPop && _cinema) setState(() => _cinema = false);
+      if (!didPop && _cinema) unawaited(_setFullscreen(false));
     },
     child: Scaffold(
       appBar: _cinema
@@ -51,26 +64,19 @@ class _PostVideoScreenState extends State<PostVideoScreen> {
               automaticallyImplyLeading: true,
             ),
       body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: Video(
-                controller: _session.video,
-                controls: NoVideoControls,
-              ),
+        child: CinemaLayout(
+          video: Video(controller: _session.video, controls: NoVideoControls),
+          controls: Padding(
+            padding: const EdgeInsets.all(16),
+            child: PlaybackControls(
+              session: _session,
+              episode: 1,
+              onNext: null,
+              onFullscreen: () => unawaited(_setFullscreen(!_cinema)),
+              fullscreen: _cinema,
+              onRetry: () => unawaited(_open()),
             ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: PlaybackControls(
-                session: _session,
-                episode: 1,
-                onNext: null,
-                onFullscreen: () => setState(() => _cinema = !_cinema),
-                fullscreen: _cinema,
-                onRetry: () => unawaited(_open()),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     ),

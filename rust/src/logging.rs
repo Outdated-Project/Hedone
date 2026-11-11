@@ -1,8 +1,12 @@
 //! UTC timestamps for opt-in diagnostics.
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tzcraft::{FractionDigits, Ticks};
 
 pub(crate) fn utc_timestamp() -> Result<String, String> {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|_| "日志时间格式错误".to_string())
+    let now = SystemTime::now();
+    let nanos = match now.duration_since(UNIX_EPOCH) {
+        Ok(span) => span.as_nanos() as i128,
+        Err(error) => -(error.duration().as_nanos() as i128),
+    };
+    Ok(Ticks::from_timestamp_nanos(nanos).to_rfc3339(FractionDigits::Auto))
 }

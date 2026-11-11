@@ -1,51 +1,56 @@
 # 验证
 
+## 2026-11-11：官方 Courierust 连接与 Range 回归
+
+环境：Windows、Flutter 3.47.9 / Dart 3.13.7、Rust 1.99.1。当前仅引用 crates.io 的 Courierust 1.1.2 和 RecurseX 0.2.5，无本地库补丁。Cargo metadata 确认全部第三方依赖来自 registry。
+
+| 检查 | 当前结果 |
+| --- | --- |
+| Rust 回归 | 64 项通过，8 项外网测试默认忽略；启用 server feature |
+| Clippy | server feature 和全部 targets，警告视为错误，通过 |
+| Flutter 静态分析 | 无问题 |
+| Flutter 回归 | 39 项通过，含横竖屏连续切换、零尺寸视口、拖动中旋转、主题及线路设置 |
+| Android 构建 | 包含地址回退、连接复用和条件 Range 的多架构 debug APK 构建通过 |
+| 本次 Android 真机 | 本轮设备列表为空；没有安装测试包，播放与旋转未重新验收 |
+| RecurseX 实际 DoH | `example.com` 的 A 记录解析通过 |
+| 固定线路 1 HTTPS | 多地址回退后再次实测仍连接超时，未通过；系统代理模式按设计明确拒绝 |
+| 交叉签名证书 | 本地夹具确认官方验证器仍拒绝完整交叉签名链；可达信任锚的短链验证通过，过期、无信任锚及签名损坏被拒绝 |
+
+本地传输测试覆盖：固定 IP 连接保留原 Host、首个地址失败后回退、地址数量限制保留两个地址族、跨来源拒绝、认证头不残留、同一连接复用、POST 响应丢失不重放、配置代理拒绝、单响应超过 8 MiB 拒绝、chunked、截断与关闭连接定界。
+
+Range 回归使用正式 Courierust 与本地 TCP 服务传输 9 MiB + 19 字节，验证十次 1 MiB 内的请求按需拼接，逐字节检查内容与逻辑响应长度。另覆盖进度跳转、长尾部区间、ETag 变化时停止交付、弱验证器拒绝、错误范围拒绝、忽略 Range 的小响应以及取消后不预取。这是协议回归，不是实际视频解码、真实 CDN 或低端设备性能测试。代理拒绝和证书错误不是功能成功，不能将其计为代理或 TLS 兼容性验收。
+
+此前含维护分支的构建曾在 PLK110 真机通过首帧、横竖屏旋转、跳转进度和切集。该结果只说明此前的播放器改动接受过实测，不代表移除补丁后的网络栈仍有相同播放兼容性。未在 iOS、macOS、Linux 真机验收，也未测量低端手机帧时间、功耗和内存峰值。
+
+普通 debug APK：`build/app/outputs/flutter-apk/app-debug.apk`。SHA-256：`914335815682208DAD22DC7BB3AC49DDA1B60C2FFCD37B153C69CF0DB5003007`。
+
+## 重现
+
 ```sh
-flutter analyze
-flutter test
+flutter analyze --no-pub
+flutter test --no-pub
+cargo fmt --manifest-path rust/Cargo.toml --check
 cargo test --manifest-path rust/Cargo.toml --features server --locked
 cargo clippy --manifest-path rust/Cargo.toml --features server --all-targets --locked -- -D warnings
+cargo test --manifest-path rust/Cargo.toml live_encrypted_dns --locked -- --ignored --nocapture
+```
+
+`live_bundled_roots_validate_primary_origin` 是显式直连的适配器测试，不使用系统代理；它只验证固定线路 1 和随包 CA，不代表应用路由或所有线路可用。证书夹具使用固定时间，真实联网测试使用设备时钟。
+
+Windows 原生桥接测试：
+
+```sh
 flutter test integration_test/native_bridge_test.dart -d windows
 ```
 
-布局测试覆盖 320、390、800、1440 逻辑像素，窄屏同时检查两倍字号。分页测试覆盖旧请求晚返回、失败页重试和销毁后完成。Rust 覆盖 URL/DNS/重定向策略、HLS 重写、Range、会话来源隔离、网关访问密钥、Web 会话与 CSRF、日志脱敏。
-
-只有 `test/` 中使用本地测试数据。应用与服务没有演示数据、假登录、假更新或失败时替换成假成功的路径。
-
-## 2026-11-10 本机记录
-
-宿主为 Windows，Flutter 3.47.9 / Dart 3.13.7、Rust 1.99.1。
-
-| 检查 | 已观察到的结果 |
-| --- | --- |
-| Dart 静态分析 | 无问题 |
-| Flutter 回归 | 22 项通过；含 320 像素两倍字号、主题逐帧颜色一致性、连续切页、减少动态效果、异步 LRU、分页去重、500 集惰性构建、竖滑停稳选择，以及未初始化媒体插件时查看详情、选集和评论 |
-| Rust 回归 | 45 项通过，6 项外网测试默认忽略；含字节预算 LRU、过期淘汰与 Range 共享分配检查 |
-| Clippy | 所有目标及 server feature，警告视为错误，通过 |
-| Windows | release 构建通过；打包库加载与原生桥接集成测试通过 |
-| Android | arm64 debug APK 构建通过；未进行设备安装与播放验收 |
-| Web | release 构建与 Rust 优化版服务构建通过 |
-| Web HTTP 边界 | 本机真实进程验证 Origin、访问密钥、Cookie、CSRF、管理员操作限制、媒体会话和退出失效 |
-| 上游只读联调 | 新版 Rust 服务在固定线路返回真实列表、详情、帖子；封面解密、HLS 清单与实际分片读取通过 |
-| Windows 播放 | 实际 PlaybackSession / Video 经 Rust 网关读取时长、渲染首帧、静音播放、跳转进度、竖滑到下一集并继续播放通过；断言切集前后 Player 是同一实例 |
-| RecurseX 联网 | `example.com` 与 `huangguoai.com` 的固定 IP DoH、Courierust TLS 校验、真实 A 记录查询分别通过 |
-
-初次迁移时固定线路 1 的系统 DNS 解析失败。此次接入 RecurseX 后，`huangguoai.com` 加密解析成功，并使用该固定线路重新通过 Windows 真实列表、详情、首帧、播放和跳转集成测试。此前固定线路 2 的入口返回 HTTP 404，没有将 DNS 恢复误记为 HTTP 404 修复。没有将镜像加入账号凭据白名单，没有使用真实账号进行注册、评论、点赞或收藏写入验证。
-
-布局可以用 `flutter test --dart-define=HG_CAPTURE_LAYOUTS=true` 导出到 `build/qa/`。图中使用明确标注的测试内容，只用于检查页面尺寸与排版。Windows 截图通道先后报告 `FrameArrived timed out` 和 `window capture timed out`，浏览器预览报告 access host unavailable；这些工具失败不计作视觉或浏览器播放验收通过。
-
-macOS、iOS、Linux 尚未在本次 Windows 环境中构建或实机运行。没有测量跨设备帧率、长时间内存曲线或声画同步，也没有进行独立安全审计。
-
-真实上游测试与离线测试分开：
+Android 播放与系统旋转测试：
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml net::tests::diag -- --ignored --nocapture
+flutter test integration_test/native_bridge_test.dart -d <Android设备ID> --dart-define=HGHUB_LIVE_BASE=https://huangguoai.com --dart-define=HGHUB_DEVICE_ROTATION=true
 ```
 
-播放联调应使用你有权访问且当时可用的内容。指定 `HGHUB_TEST_VIDEO_ID` 后运行 `media::tests::live_play_chain`。它依次检查播放接口、清单与媒体分片，失败不能替代真实设备上的解码、音画同步和拖动验收。
+不提供 `HGHUB_LIVE_BASE` 时仅检查原生库加载、本地线路选择和网络边界。提供后使用独立临时数据目录，从真实列表选择内容，静音播放并检查首帧、进度、旋转及单播放器复用。测试结束应恢复普通应用 APK；测试包不能作为日常应用分发。
 
-Windows 播放器集成测试可传 `--dart-define=HGHUB_LIVE_BASE=<当时可用的 HTTPS origin>`。测试使用独立临时目录，从第一页读取一条内容，保持音量为零，并检查时长、播放和跳转；如果提供多集，继续验证竖滑切集、单播放器复用与下一集播放位置推进。不提供此参数时只运行本地桥接与边界检查。测试输出不打印媒体签名地址。
+媒体单独联调需要 `HGHUB_TEST_VIDEO_ID`，运行 `media::tests::live_play_chain` 或 `transport::tests::live_manifest_can_reopen_same_origin` 的 ignored 测试。日志不打印带签名的媒体地址。上游不可用时测试失败，不用演示内容替换为假成功。
 
-单独验证加密 DNS：`cargo test --manifest-path rust/Cargo.toml dns::tests::live_encrypted_dns -- --ignored --nocapture`。默认查询 `example.com`；通过 `HGHUB_DNS_TEST_HOST` 指定需要排查的域名。此测试绕开系统解析，实际验证 RecurseX/Courierust 链路，不把系统缓存命中计作加密 DNS 成功。
-
-CI 工作流包含 Windows、Linux、macOS、iOS 编译与 Android ARM64 debug 构建。提交工作流不代表 CI 已执行；远端运行结果、Apple 签名和真机播放需要独立确认。发布前还应检查横竖屏、后台恢复、辅助功能、弱网、长片 Range 与长时间播放内存占用。
+传输限制、证书路径与代理行为见 [依赖边界](dependencies.md)。单请求完整缓冲和新连接握手仍会影响首帧等待；不能把布局回归通过描述为全平台流畅播放或渲染性能已经达标。

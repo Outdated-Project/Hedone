@@ -8,7 +8,7 @@ import '../ui/design.dart';
 import '../ui/feedback.dart';
 import '../ui/poster.dart';
 import 'detail.dart';
-import 'settings.dart';
+import 'lines.dart';
 import 'discovery_spotlight.dart';
 
 class BrowseScreen extends StatefulWidget {

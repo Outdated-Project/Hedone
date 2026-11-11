@@ -1,13 +1,13 @@
 //! Bounded system DNS with a verified RecurseX DoH fallback.
 //! This resolver never changes the HTTP target policy or the TLS hostname.
-use courierust::courierust_tls::{system_roots, RootStore};
+use courierust::courierust_tls::{RootStore, system_roots};
 use nextjson::{NsonDeserialize, NsonSerialize};
+use nextjson::{Value, json};
 use recurse_x::cache::persist::PersistConfig;
 use recurse_x::forward::Forwarder;
 use recurse_x::rdata::RData;
 use recurse_x::upstream::{Endpoint, Proto};
 use recurse_x::{Name, Rcode, Resolver, ResolverConfig, RrType};
-use serde_json::{json, Value};
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -205,11 +205,11 @@ async fn encrypted(dns: Arc<Dns>, host: String, kind: RrType) -> Result<Vec<IpAd
             .collect();
         // RecurseX writes its bounded snapshot through rustbinary/nextjson.
         // No timer or background polling wakes an idle media client.
-        if let Ok(mut last) = dns.last_save.try_lock() {
-            if last.elapsed() >= Duration::from_secs(60) {
-                let _ = dns.resolver.persist_cache();
-                *last = Instant::now();
-            }
+        if let Ok(mut last) = dns.last_save.try_lock()
+            && last.elapsed() >= Duration::from_secs(60)
+        {
+            let _ = dns.resolver.persist_cache();
+            *last = Instant::now();
         }
         Ok(addresses)
     })
@@ -238,11 +238,10 @@ pub async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     if dns.settings.mode != "encrypted" {
         if let Ok(Ok(addresses)) =
             tokio::time::timeout(SYSTEM_TIMEOUT, system(host.to_owned(), port)).await
+            && !addresses.is_empty()
         {
-            if !addresses.is_empty() {
-                dns.system_answers.fetch_add(1, Ordering::Relaxed);
-                return Ok(addresses);
-            }
+            dns.system_answers.fetch_add(1, Ordering::Relaxed);
+            return Ok(addresses);
         }
         if dns.settings.mode == "system" {
             dns.failures.fetch_add(1, Ordering::Relaxed);
@@ -290,13 +289,13 @@ fn combine(
 pub fn diagnostics() -> Value {
     match STATE.get() {
         Some(dns) => json!({
-            "engine": "RecurseX 0.2.4", "mode": dns.settings.mode,
-            "transport": "DoH / Courierust 1.1.1", "certificate_verification": true,
+            "engine": "RecurseX 0.2.5", "mode": dns.settings.mode,
+            "transport": "DoH / Courierust 1.1.2", "certificate_verification": true,
             "system_answers": dns.system_answers.load(Ordering::Relaxed),
             "encrypted_answers": dns.encrypted_answers.load(Ordering::Relaxed),
             "failures": dns.failures.load(Ordering::Relaxed),
         }),
-        None => json!({"engine": "RecurseX 0.2.4", "initialized": false}),
+        None => json!({"engine": "RecurseX 0.2.5", "initialized": false}),
     }
 }
 
@@ -357,8 +356,10 @@ mod tests {
         let host = std::env::var("HGHUB_DNS_TEST_HOST").unwrap_or_else(|_| "example.com".into());
         let addresses = encrypted(dns, host, RrType::A).await.unwrap();
         assert!(!addresses.is_empty());
-        assert!(addresses
-            .iter()
-            .all(|ip| crate::network_policy::allowed_ip(*ip)));
+        assert!(
+            addresses
+                .iter()
+                .all(|ip| crate::network_policy::allowed_ip(*ip))
+        );
     }
 }

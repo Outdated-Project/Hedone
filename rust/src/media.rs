@@ -2,12 +2,12 @@
 
 use crate::net::{fetch_bytes, fetch_resource};
 use crate::weighted_cache::WeightedCache;
-use aes::cipher::{BlockDecrypt, KeyInit};
 use aes::Aes128;
+use aes::cipher::{BlockCipherDecrypt, KeyInit};
 use axum::body::Bytes;
-use http::{Response, StatusCode};
+use axum::http::{Response, StatusCode};
 use once_cell::sync::Lazy;
-use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -140,14 +140,33 @@ fn dec(s: &str) -> String {
     percent_decode_str(s).decode_utf8_lossy().to_string()
 }
 
+/// Keep a media suffix in the gateway path for HLS demuxer format checks.
+/// The suffix is descriptive only; all access checks use the encoded target.
+pub(crate) fn gateway_url(prefix: &str, route: &str, target: &str) -> String {
+    let parsed = url::Url::parse(target).ok();
+    let extension = parsed
+        .as_ref()
+        .and_then(|u| u.path().rsplit('/').next())
+        .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext))
+        .filter(|ext| {
+            !ext.is_empty() && ext.len() <= 8 && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+        });
+    let fallback = if route == "seg" { "ts" } else { "bin" };
+    format!(
+        "{prefix}/{route}.{}?u={}",
+        extension.unwrap_or(fallback).to_ascii_lowercase(),
+        enc(target)
+    )
+}
+
 fn absolutize(base: &str, target: &str) -> String {
     if target.starts_with("http://") || target.starts_with("https://") {
         return target.to_string();
     }
-    if let Ok(b) = url::Url::parse(base) {
-        if let Ok(j) = b.join(target) {
-            return j.to_string();
-        }
+    if let Ok(b) = url::Url::parse(base)
+        && let Ok(j) = b.join(target)
+    {
+        return j.to_string();
     }
     target.to_string()
 }
@@ -178,16 +197,14 @@ fn map_uri_attributes(line: &str, mut rewrite: impl FnMut(&str) -> String) -> St
     let mapped: Vec<String> = attributes
         .into_iter()
         .map(|attribute| {
-            if let Some((key, value)) = attribute.split_once('=') {
-                if key.trim() == "URI" {
-                    if let Some(uri) = value
-                        .trim()
-                        .strip_prefix('"')
-                        .and_then(|v| v.strip_suffix('"'))
-                    {
-                        return format!("{key}=\"{}\"", rewrite(uri));
-                    }
-                }
+            if let Some((key, value)) = attribute.split_once('=')
+                && key.trim() == "URI"
+                && let Some(uri) = value
+                    .trim()
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+            {
+                return format!("{key}=\"{}\"", rewrite(uri));
             }
             attribute.to_string()
         })
@@ -196,7 +213,7 @@ fn map_uri_attributes(line: &str, mut rewrite: impl FnMut(&str) -> String) -> St
 }
 
 fn rewrite_uri_attr(line: &str, prefix: &str) -> String {
-    map_uri_attributes(line, |uri| format!("{prefix}/seg?u={}", enc(uri)))
+    map_uri_attributes(line, |uri| gateway_url(prefix, "seg", uri))
 }
 
 /// 取 m3u8 并把 key / 子列表 / 分片地址改写到本地协议。
@@ -257,7 +274,7 @@ pub(crate) fn rewrite_playlist(url: &str, text: &str, prefix: &str) -> String {
             }
         } else {
             let absolute = absolutize(url, line);
-            out.push_str(&format!("{prefix}/seg?u={}", enc(&absolute)));
+            out.push_str(&gateway_url(prefix, "seg", &absolute));
         }
         out.push('\n');
     }
@@ -407,7 +424,7 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Bytes> {
     };
     crate::playback_log::record(
         "proxy.begin",
-        serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target)}),
+        nextjson::json!({"route": route, "resource": crate::playback_log::resource_id(&target)}),
     );
     let response = match path {
         "/img" => match load_image(&target).await {
@@ -433,7 +450,7 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Bytes> {
     };
     crate::playback_log::record(
         "proxy.end",
-        serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target), "status": response.status().as_u16(), "bytes": response.body().len(), "elapsed_ms": started.elapsed().as_millis() as u64}),
+        nextjson::json!({"route": route, "resource": crate::playback_log::resource_id(&target), "status": response.status().as_u16(), "bytes": response.body().len(), "elapsed_ms": started.elapsed().as_millis() as u64}),
     );
     response
 }
@@ -457,7 +474,7 @@ mod tests {
         let absolute = absolutize_uri_in_attr("https://cdn.example/master.m3u8", line);
         let rewritten = rewrite_uri_attr(&absolute, LOCAL_ORIGIN);
         assert_eq!(
-            rewritten.matches(&format!("{LOCAL_ORIGIN}/seg?u=")).count(),
+            rewritten.matches(&format!("{LOCAL_ORIGIN}/seg.")).count(),
             2
         );
         assert!(rewritten.contains("NAME=\"audio,main\""));
@@ -474,7 +491,7 @@ mod tests {
             LOCAL_ORIGIN,
         );
         let body = std::str::from_utf8(response.body()).unwrap();
-        assert_eq!(body.matches(&format!("{LOCAL_ORIGIN}/seg?u=")).count(), 4);
+        assert_eq!(body.matches(&format!("{LOCAL_ORIGIN}/seg.")).count(), 4);
         assert!(!body.contains("URI=\"http://127.0.0.1/key"));
         assert!(body.contains("https%3A%2F%2Fcdn%2Eexample%2Faudio%2Flist%2Em3u8"));
         assert_eq!(
@@ -482,11 +499,16 @@ mod tests {
             "application/vnd.apple.mpegurl"
         );
         assert_eq!(response.headers()["X-Content-Type-Options"], "nosniff");
-        assert!(!response
-            .headers()
-            .contains_key("Access-Control-Allow-Origin"));
-        let optional = rewrite_playlist("https://cdn.example/list.m3u8",
-            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"https://other.example/list.json\"\n#EXT-X-DATERANGE:ID=\"ad\",X-ASSET-LIST=\"http://127.0.0.1/assets\"\nsegment.ts\n", LOCAL_ORIGIN);
+        assert!(
+            !response
+                .headers()
+                .contains_key("Access-Control-Allow-Origin")
+        );
+        let optional = rewrite_playlist(
+            "https://cdn.example/list.m3u8",
+            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"https://other.example/list.json\"\n#EXT-X-DATERANGE:ID=\"ad\",X-ASSET-LIST=\"http://127.0.0.1/assets\"\nsegment.ts\n",
+            LOCAL_ORIGIN,
+        );
         assert!(!optional.contains("CONTENT-STEERING") && !optional.contains("X-ASSET-LIST"));
         assert!(optional.contains("#EXT-X-DATERANGE:ID=\"ad\""));
         let bom = segment_response(
@@ -554,7 +576,7 @@ mod tests {
 
         assert!(body.contains("#EXTM3U"), "not a playlist: {body}");
         assert!(
-            body.contains(&format!("{LOCAL_ORIGIN}/seg?u=")),
+            body.contains(&format!("{LOCAL_ORIGIN}/seg.ts?u=")),
             "segments not rewritten: {body}"
         );
         // 分片必须绝对化到源站，并保留签名查询串。
@@ -570,13 +592,33 @@ mod tests {
             "key uri not rewritten: {body}"
         );
         assert!(!body.contains("URI=\"key.bin"), "key uri left relative");
+        assert!(body.contains("/seg.bin?u="));
+    }
+
+    #[test]
+    fn gateway_preserves_format_suffix_without_copying_untrusted_path() {
+        for (target, suffix) in [
+            ("https://cdn.example/a.TS?signature=a.b", "ts"),
+            ("https://cdn.example/index.m3u8", "m3u8"),
+            ("https://cdn.example/fragment.m4s", "m4s"),
+            ("https://cdn.example/opaque", "ts"),
+            ("https://cdn.example/a.%22bad", "ts"),
+        ] {
+            let local = gateway_url(LOCAL_ORIGIN, "seg", target);
+            let parsed = url::Url::parse(&local).unwrap();
+            assert!(parsed.path().ends_with(&format!("/seg.{suffix}")));
+            assert_eq!(
+                parsed.query_pairs().find(|(k, _)| k == "u").unwrap().1,
+                target
+            );
+        }
     }
 
     /// 离线回归：用已知明文 + 项目内置 key/IV 构造密文，验证解密、去填充与类型识别。
     /// 真实封面抓取那条仍保留为 `#[ignore]` 联网测试。
     #[test]
     fn cover_decrypt_roundtrip() {
-        use aes::cipher::BlockEncrypt;
+        use aes::cipher::BlockCipherEncrypt;
 
         let plain = b"\xFF\xD8\xFF\xE0cover-payload-for-test".to_vec();
         let mut buf = plain.clone();
