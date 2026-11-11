@@ -1,6 +1,6 @@
 //! Explicit proxy policy; never silently bypass a configured proxy.
 pub(crate) fn for_url(target: &url::Url) -> Result<Option<String>, String> {
-    let explicit = std::env::var("HGHUB_PROXY")
+    let explicit = std::env::var("HEDONE_PROXY")
         .ok()
         .filter(|v| !v.trim().is_empty());
     if let Some(value) = explicit {

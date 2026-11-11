@@ -26,7 +26,8 @@ class StatusPane extends StatelessWidget {
   final VoidCallback? onRetry;
   @override
   Widget build(BuildContext context) => Center(
-    child: Padding(
+    child: SingleChildScrollView(
+      primary: false,
       padding: const EdgeInsets.all(32),
       child: Column(
         mainAxisSize: MainAxisSize.min,

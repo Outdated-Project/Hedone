@@ -1,8 +1,11 @@
+import 'dart:convert';
+
 import '../core/app_model.dart';
 import '../data/models.dart';
 import '../data/transport.dart';
 import '../ui/design.dart';
 import '../ui/feedback.dart';
+import '../ui/haptics.dart';
 
 class LinesScreen extends StatefulWidget {
   const LinesScreen({required this.model, super.key});
@@ -18,11 +21,28 @@ class _LinesScreenState extends State<LinesScreen> {
   String? _selecting;
   bool _confirming = false, _discovering = false, _probing = false;
   String? _discoveryError;
+  bool _cached = false;
+  int _probeCount = 0, _probeTotal = 0;
+
+  List<Json> _validMirrors(dynamic value) => objects(value)
+      .where((row) {
+        final uri = Uri.tryParse(string(row['url']));
+        return uri != null &&
+            uri.scheme == 'https' &&
+            uri.host.isNotEmpty &&
+            uri.userInfo.isEmpty &&
+            (uri.path.isEmpty || uri.path == '/') &&
+            !uri.hasQuery &&
+            !uri.hasFragment;
+      })
+      .take(60)
+      .toList();
 
   @override
   void initState() {
     super.initState();
     _state = widget.model.repository.call('line_state').then(object);
+    _discover();
   }
 
   Future<void> _select(String url) async {
@@ -54,6 +74,7 @@ class _LinesScreenState extends State<LinesScreen> {
       if (approved != true || !mounted) return;
     }
     setState(() => _selecting = url);
+    AppHaptics.selection(context);
     try {
       await model.setLine(url);
       if (mounted) M3ESnackbar.show(context, message: '已切换数据线路');
@@ -71,8 +92,50 @@ class _LinesScreenState extends State<LinesScreen> {
       _discoveryError = null;
     });
     try {
+      if (_mirrors.isEmpty) {
+        try {
+          final saved = await widget.model.preferences.getString(
+            'line.mirrors.v1',
+          );
+          final cache = saved == null
+              ? <String, dynamic>{}
+              : object(jsonDecode(saved));
+          final age =
+              DateTime.now().millisecondsSinceEpoch - number(cache['at']);
+          if (mounted &&
+              age >= 0 &&
+              age < const Duration(days: 7).inMilliseconds) {
+            setState(() {
+              _mirrors = _validMirrors(cache['items']);
+              _cached = _mirrors.isNotEmpty;
+            });
+          }
+        } catch (_) {
+          /* Ignore unavailable optional cache; fetch the source. */
+        }
+      }
       final value = object(await widget.model.repository.call('line_mirrors'));
-      if (mounted) setState(() => _mirrors = objects(value['items']));
+      final mirrors = _validMirrors(value['items']);
+      if (mounted) {
+        setState(() {
+          _mirrors = mirrors;
+          _cached = false;
+          if (_mirrors.isEmpty) _discoveryError = '发布页没有返回镜像，请稍后刷新。固定线路仍可手动选择。';
+        });
+      }
+      if (mirrors.isNotEmpty) {
+        try {
+          await widget.model.preferences.setString(
+            'line.mirrors.v1',
+            jsonEncode({
+              'at': DateTime.now().millisecondsSinceEpoch,
+              'items': mirrors,
+            }),
+          );
+        } catch (_) {
+          /* A cache write cannot invalidate fresh network results. */
+        }
+      }
     } catch (error) {
       if (mounted) setState(() => _discoveryError = errorMessage(error));
     } finally {
@@ -82,15 +145,22 @@ class _LinesScreenState extends State<LinesScreen> {
 
   Future<void> _probe(List<Json> lines) async {
     if (_probing) return;
-    setState(() => _probing = true);
+    setState(() {
+      _probing = true;
+      _probeCount = 0;
+      _probeTotal = lines.length;
+    });
     await perform(context, () async {
-      final value = object(
-        await widget.model.repository.call('line_probe', {
-          'urls': lines.take(16).map((line) => string(line['url'])).toList(),
-        }),
-      );
-      if (mounted) {
+      for (var offset = 0; offset < lines.length && mounted; offset += 16) {
+        final batch = lines.skip(offset).take(16).toList();
+        final value = object(
+          await widget.model.repository.call('line_probe', {
+            'urls': batch.map((line) => string(line['url'])).toList(),
+          }),
+        );
+        if (!mounted) return;
         setState(() {
+          _probeCount += batch.length;
           for (final result in objects(value['items'])) {
             _results[string(result['url'])] = result;
           }
@@ -165,6 +235,12 @@ class _LinesScreenState extends State<LinesScreen> {
           final fixed = objects(snapshot.data!['fixed']);
           final unique = <String, Json>{
             for (final row in [...fixed, ..._mirrors]) string(row['url']): row,
+            if (widget.model.base.isNotEmpty &&
+                ![
+                  ...fixed,
+                  ..._mirrors,
+                ].any((v) => v['url'] == widget.model.base))
+              widget.model.base: {'name': '当前线路', 'url': widget.model.base},
           };
           final lines = unique.values.toList();
           return Align(
@@ -179,8 +255,13 @@ class _LinesScreenState extends State<LinesScreen> {
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 8),
-                  const Text('切换不依赖连接检测。镜像仅供游客浏览，账号登录请使用固定线路。'),
+                  const Text('自动读取发布页镜像。镜像仅供游客浏览，账号登录请使用固定线路。'),
                   const SizedBox(height: 24),
+                  if (_cached)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text('显示最近缓存的镜像，可用性以连接检测为准。'),
+                    ),
                   for (final line in lines) _line(line),
                   const SizedBox(height: 16),
                   Wrap(
@@ -195,7 +276,9 @@ class _LinesScreenState extends State<LinesScreen> {
                       ),
                       M3EButton(
                         onPressed: _probing ? null : () => _probe(lines),
-                        label: Text(_probing ? '正在检测' : '检测连接'),
+                        label: Text(
+                          _probing ? '检测中 $_probeCount/$_probeTotal' : '检测连接',
+                        ),
                         icon: const Icon(Icons.network_check_rounded),
                         style: M3EButtonStyle.tonal,
                       ),

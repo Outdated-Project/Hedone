@@ -1,5 +1,6 @@
 import '../data/models.dart';
 import 'design.dart';
+import 'haptics.dart';
 
 /// Lazily builds adjacent episode pages. Only the selected page owns the video
 /// widget; a completed gesture, not each drag update, requests another episode.
@@ -96,6 +97,7 @@ class _EpisodePagerState extends State<EpisodePager> {
                 epoch == _syncEpoch &&
                 _positions.containsKey(number) &&
                 number != widget.selected) {
+              AppHaptics.selection(context);
               widget.onSelect(number);
             }
           });

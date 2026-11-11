@@ -19,10 +19,10 @@ String errorMessage(Object error) {
     '',
   );
   if (text == '401') return '登录已过期，请重新登录';
-  if (text.contains('no trusted root found')) {
-    return '当前网络库无法验证该线路的证书链，请更换数据线路。证书校验不会关闭。';
-  }
-  if (text.contains('TLS certificate error')) {
+  if (text.contains('no trusted root found') ||
+      text.contains('invalid peer certificate') ||
+      text.contains('certificate verify') ||
+      text.contains('TLS certificate error')) {
     return '服务器证书验证失败。请检查设备日期、网络代理或更换数据线路。';
   }
   final status = RegExp(r'^HTTP\s+(\d{3})\b').firstMatch(text)?.group(1);

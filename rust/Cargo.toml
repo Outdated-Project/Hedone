@@ -1,10 +1,10 @@
 [package]
-name = "hghub_core"
-version = "2.0.0"
+name = "hedone_core"
+version = "1.0.1"
 edition = "2024"
 publish = false
 license = "PolyForm-Noncommercial-1.0.0"
-description = "HGhub native service and validated media transport"
+description = "Hedone native service and validated media transport"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
@@ -13,8 +13,20 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 flutter_rust_bridge = "2.13.0"
 nextjson = { version = "0.1.5", features = ["derive"] }
 courierust = { version = "1.1.2" }
+reqwest = { version = "0.12.28", default-features = false, features = [
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "socks",
+    "stream",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+] }
+webpki-roots = "1"
 rustbinary = { version = "0.1.10" }
-recurse-x = { version = "0.2.5" }
+recurse-x = { version = "0.2.6", default-features = false, features = ["std", "doh", "persist"] }
 tzcraft = { version = "0.1.2", default-features = false, features = ["alloc"] }
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -45,7 +57,7 @@ default = []
 server = ["dep:tower-http"]
 
 [[bin]]
-name = "hghub-server"
+name = "hedone-server"
 path = "src/bin/server.rs"
 required-features = ["server"]
 

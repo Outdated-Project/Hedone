@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "HGhub contributors" "\0"
-            VALUE "FileDescription", "hghub" "\0"
+            VALUE "CompanyName", "Hedone contributors" "\0"
+            VALUE "FileDescription", "hedone" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "hghub" "\0"
+            VALUE "InternalName", "hedone" "\0"
             VALUE "LegalCopyright", "PolyForm Noncommercial 1.0.0" "\0"
-            VALUE "OriginalFilename", "hghub.exe" "\0"
-            VALUE "ProductName", "hghub" "\0"
+            VALUE "OriginalFilename", "hedone.exe" "\0"
+            VALUE "ProductName", "hedone" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

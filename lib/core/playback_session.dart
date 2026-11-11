@@ -15,11 +15,14 @@ class PlaybackSession extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Player _createPlayer() {
+    // Media dependencies should not prevent the catalogue or settings from
+    // opening. Initialization errors are handled by the playback operation.
+    MediaKit.ensureInitialized();
     final instance = Player(
       configuration: const PlayerConfiguration(
-        title: 'HGhub',
+        title: 'Hedone',
         bufferSize: 8 * 1024 * 1024,
-        logLevel: bool.fromEnvironment('HGHUB_CAPTURE_DIAGNOSTICS')
+        logLevel: bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')
             ? MPVLogLevel.debug
             : MPVLogLevel.error,
       ),

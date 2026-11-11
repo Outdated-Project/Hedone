@@ -1,0 +1,21 @@
+{
+  "scenario": "android Profile; 48 local brand-image test posters; 20 settled navigation changes; 10 interrupted changes; 4 scrolls; no video decoder",
+  "os": "PLK110_16.0.3.503(CN01)",
+  "frames": 405,
+  "reported_display_rates_hz": [
+    60.000003814697266
+  ],
+  "frames_over_reported_display_budget": 20,
+  "build_ms_p50": 0.956,
+  "build_ms_p90": 5.066,
+  "build_ms_p99": 13.82,
+  "raster_ms_p50": 1.096,
+  "raster_ms_p90": 9.815,
+  "raster_ms_p99": 24.842,
+  "frames_over_16_67ms": 20,
+  "rss_before_bytes": 327561216,
+  "rss_peak_sampled_bytes": 383741952,
+  "rss_after_bytes": 384978944,
+  "decoded_cache_bytes": 25165824,
+  "live_image_count": 9
+}

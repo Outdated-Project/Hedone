@@ -1,0 +1,17 @@
+{
+  "scenario": "Windows Profile; 48 local brand-image test posters; 20 navigation changes; 4 scrolls; no video decoder",
+  "os": "\"Windows 10 Pro for Workstations\" 10.0 (Build 19045)",
+  "frames": 427,
+  "build_ms_p50": 0.534,
+  "build_ms_p90": 2.378,
+  "build_ms_p99": 9.194,
+  "raster_ms_p50": 2.378,
+  "raster_ms_p90": 3.468,
+  "raster_ms_p99": 9.659,
+  "frames_over_16_67ms": 1,
+  "rss_before_bytes": 209960960,
+  "rss_peak_sampled_bytes": 246190080,
+  "rss_after_bytes": 215592960,
+  "decoded_cache_bytes": 9895936,
+  "live_image_count": 20
+}

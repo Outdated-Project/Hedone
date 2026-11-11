@@ -31,6 +31,14 @@ pub async fn mirrors() -> Result<Value, String> {
     let html = get_text(PUBLISH_PAGE).await?;
     let js_rel = script_src(&html).unwrap_or_else(|| "publish.js".to_string());
     let js_url = absolute(PUBLISH_PAGE, &js_rel);
+    let script = url::Url::parse(&js_url).map_err(|_| "镜像脚本地址无效")?;
+    if script.origin()
+        != url::Url::parse(PUBLISH_PAGE)
+            .expect("static origin")
+            .origin()
+    {
+        return Err("镜像脚本必须来自地址发布页的同一来源".into());
+    }
     let js = get_text(&js_url).await?;
 
     let domains = js_array(&js, "var urls");
@@ -52,6 +60,18 @@ pub async fn mirrors() -> Result<Value, String> {
             subs.iter().map(|s| format!("{s}.{domain}")).collect()
         };
         for host in hosts {
+            let raw = format!("https://{host}");
+            let Ok(candidate) = crate::network_policy::parse_target(&raw) else {
+                continue;
+            };
+            if candidate.path() != "/"
+                || candidate.query().is_some()
+                || candidate.fragment().is_some()
+                || candidate.port().is_some()
+                || !matches!(candidate.host(), Some(url::Host::Domain(_)))
+            {
+                continue;
+            }
             if !seen.insert(host.clone()) {
                 continue;
             }
@@ -106,39 +126,51 @@ async fn get_text(url: &str) -> Result<String, String> {
 
 /// 从 HTML 里挑出脚本地址（发布页只有一个 `publish.js?<版本>`）。
 fn script_src(html: &str) -> Option<String> {
-    let mut rest = html;
-    while let Some(i) = rest.find("src=\"") {
-        let after = &rest[i + 5..];
-        let end = after.find('"')?;
-        let candidate = &after[..end];
-        if candidate.contains(".js") {
-            return Some(candidate.to_string());
+    for tag in html.split('<').filter(|tag| tag.starts_with("script")) {
+        let tag = tag.split('>').next()?;
+        let Some((_, attr)) = tag.split_once("src") else {
+            continue;
+        };
+        let Some(value) = attr.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim_start();
+        let quote = value.chars().next()?;
+        if quote != '\'' && quote != '"' {
+            continue;
         }
-        rest = &after[end..];
+        let Some(end) = value[1..].find(quote) else {
+            continue;
+        };
+        let candidate = &value[1..end + 1];
+        if candidate
+            .split('?')
+            .next()
+            .is_some_and(|v| v.ends_with("publish.js"))
+        {
+            return Some(candidate.replace("&amp;", "&"));
+        }
     }
     None
 }
 
 fn absolute(base: &str, rel: &str) -> String {
-    if rel.starts_with("http://") || rel.starts_with("https://") {
-        return rel.to_string();
-    }
-    let origin = url::Url::parse(base)
-        .ok()
-        .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or_default()));
-    match origin {
-        Some(o) if rel.starts_with('/') => format!("{o}{rel}"),
-        Some(o) => format!("{o}/{rel}"),
-        None => rel.to_string(),
-    }
+    url::Url::parse(base)
+        .and_then(|url| url.join(rel))
+        .map(|url| url.to_string())
+        .unwrap_or_default()
 }
 
 /// 取 JS 里 `var <name> = [ ... ]` 的字符串数组（去掉行尾 `//` 注释，但保留字符串里的 `//`）。
 fn js_array(src: &str, decl: &str) -> Vec<String> {
-    let Some(at) = src.find(decl) else {
+    let name = decl.strip_prefix("var ").unwrap_or(decl);
+    let Some(rest) = ["var", "let", "const"].iter().find_map(|kind| {
+        let declaration = format!("{kind} {name}");
+        src.match_indices(&declaration)
+            .find_map(|(at, _)| src[at + declaration.len()..].trim_start().strip_prefix('='))
+    }) else {
         return Vec::new();
     };
-    let rest = &src[at..];
     let Some(open) = rest.find('[') else {
         return Vec::new();
     };
@@ -147,11 +179,18 @@ fn js_array(src: &str, decl: &str) -> Vec<String> {
     };
     strip_line_comments(&rest[open + 1..open + close])
         .split(',')
-        .map(|raw| {
-            raw.trim()
-                .trim_matches(|c: char| c == '\'' || c == '"')
-                .trim()
-                .to_string()
+        .filter_map(|raw| {
+            let raw = raw.trim();
+            let quote = raw.chars().next()?;
+            if !matches!(quote, '\'' | '"') || raw.len() < 2 || !raw.ends_with(quote) {
+                return None;
+            }
+            let value = &raw[1..raw.len() - 1];
+            // Publication lists are plain host labels, not executable JS.
+            if value.chars().any(|c| c == quote || c == '\\') {
+                return None;
+            }
+            Some(value.trim().to_owned())
         })
         .filter(|s| !s.is_empty())
         .collect()
@@ -218,11 +257,7 @@ var foreverUrls = [
         assert_eq!(js_array(SAMPLE, "var subdomains"), vec!["thu", "pku"]);
         assert_eq!(
             js_array(SAMPLE, "var foreverUrls"),
-            vec![
-                "https://huangguoai.com",
-                "JumpPage",
-                "https://huangguoai.ai"
-            ]
+            vec!["https://huangguoai.com", "https://huangguoai.ai"]
         );
     }
 
@@ -242,6 +277,20 @@ var foreverUrls = [
     fn picks_script_src() {
         let html = r#"<link rel="stylesheet" href="publish.css?1" /><script type="text/javascript" src="publish.js?20261103-2"></script>"#;
         assert_eq!(script_src(html).as_deref(), Some("publish.js?20261103-2"));
+        assert_eq!(
+            script_src(
+                "<script src='metrics.js'></script><script src = 'publish.js?v=2&amp;x=3'></script>"
+            )
+            .as_deref(),
+            Some("publish.js?v=2&x=3")
+        );
+        assert_eq!(
+            js_array(
+                "const urlsExtra=['wrong']; let urls = ['valid.example'];",
+                "var urls"
+            ),
+            vec!["valid.example"]
+        );
     }
 
     /// 手动跑：`cargo test --lib -- --ignored lines::tests::mirrors_live -- --nocapture`
@@ -261,7 +310,6 @@ var foreverUrls = [
         let urls = vec![
             "https://huangguoai.com".to_string(),
             "https://huangguoai.ai".to_string(),
-            "https://thu.xxbgwypx.cc".to_string(),
         ];
         println!(
             "{}",

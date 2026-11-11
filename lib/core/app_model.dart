@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'preferences.dart';
+import 'recommendations.dart';
 
 import '../data/models.dart';
 import '../data/repository.dart';
@@ -23,6 +24,8 @@ class AppModel extends ChangeNotifier {
   Json? user;
   String base = '', theme = 'system';
   bool reducedMotion = false;
+  bool haptics = true;
+  final recommendations = RecommendationProfile();
   bool serviceExpired = false;
   final List<WatchEntry> history = [];
   final Map<int, VideoItem> favorites = {};
@@ -39,6 +42,7 @@ class AppModel extends ChangeNotifier {
     base = string(boot['base']);
     theme = await preferences.getString('theme') ?? 'system';
     reducedMotion = await preferences.getBool('reducedMotion') ?? false;
+    haptics = await preferences.getBool('haptics') ?? true;
     await _readLibrary();
     notifyListeners();
   }
@@ -46,11 +50,13 @@ class AppModel extends ChangeNotifier {
   Future<void> _readLibrary() async {
     history.clear();
     favorites.clear();
+    recommendations.clear();
     try {
       final saved = await preferences.getString('library.$_scope');
       final value = saved == null
           ? <String, dynamic>{}
           : object(jsonDecode(saved));
+      recommendations.restore(object(value['recommendations']));
       history.addAll(
         objects(value['history']).take(100).map(WatchEntry.fromJson),
       );
@@ -68,6 +74,7 @@ class AppModel extends ChangeNotifier {
     final data = jsonEncode({
       'history': history.map((e) => e.toJson()).toList(),
       'favorites': favorites.values.map((e) => e.toJson()).toList(),
+      'recommendations': recommendations.toJson(),
     });
     final next = _writes
         .catchError((Object _) {})
@@ -77,6 +84,7 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<void> remember(WatchEntry entry) async {
+    recommendations.watch(entry.video, entry.positionMs);
     history.removeWhere((e) => e.video.id == entry.video.id);
     history.insert(0, entry);
     if (history.length > 100) history.removeLast();
@@ -99,6 +107,7 @@ class AppModel extends ChangeNotifier {
 
   Future<void> clearHistory() async {
     history.clear();
+    recommendations.clear();
     await saveLibrary();
     notifyListeners();
   }
@@ -172,6 +181,17 @@ class AppModel extends ChangeNotifier {
   Future<void> setReducedMotion(bool enabled) async {
     await preferences.setBool('reducedMotion', enabled);
     reducedMotion = enabled;
+    notifyListeners();
+  }
+
+  Future<void> rememberSearch(String query) async {
+    recommendations.search(query);
+    await saveLibrary();
+  }
+
+  Future<void> setHaptics(bool enabled) async {
+    await preferences.setBool('haptics', enabled);
+    haptics = enabled;
     notifyListeners();
   }
 

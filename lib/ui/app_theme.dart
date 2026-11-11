@@ -6,7 +6,7 @@ abstract final class AppTheme {
   static final dark = _create(Brightness.dark);
 
   static ThemeData _create(Brightness brightness) {
-    const seed = Color(0xFF647A27);
+    const seed = Color(0xFFB85C38);
     final data =
         (brightness == Brightness.light
                 ? M3EThemeData.light(seedColor: seed)
@@ -15,11 +15,12 @@ abstract final class AppTheme {
               typography: M3ETypography.material3(
                 mode: M3ETypeScaleMode.variable,
               ),
-              fontFamily: 'Roboto Flex',
+              fontFamily: 'Google Sans',
               fontFamilyFallback: const ['Noto Sans SC'],
             );
     return data.toThemeData().copyWith(
       scaffoldBackgroundColor: data.colorScheme.surface,
+      visualDensity: VisualDensity.standard,
     );
   }
 

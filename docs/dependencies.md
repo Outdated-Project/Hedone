@@ -1,40 +1,31 @@
-# 依赖边界
+﻿# 依赖边界
 
-业务 JSON、FRB 信封、会话快照、诊断日志和 Web JSON 请求统一使用 NextJson 0.1.5。Web 的提取器继续使用 Axum 的请求体限额，拒绝错误的 Content-Type 和无效 JSON。关闭 Axum 的默认 JSON 功能，移除直接 serde / serde_json 依赖；不能把 HTTP 框架内部仍使用 Serde 的路径参数解析称为业务 JSON 未迁移。
+依赖来自正式软件包仓库，版本写入锁文件。不维护 vendor 目录、源码拷贝或 `[patch.crates-io]`。应用负责资源预算和信任策略，协议与密码学实现交给库。
 
-UTC 日志时间改用 tzcraft 0.1.2，删除直接 time 依赖。这里只启用 alloc：tzcraft 的默认 binary 功能要求 RustBinary 的 alloc feature，而指定的 RustBinary 0.1.10 不提供该 feature。关闭未使用的 codec，避免修改第三方源码或降低版本掩盖冲突。
+## HTTP 与 TLS
 
-RustBinary 继续用于 RecurseX 的缓存快照。当前依赖图没有 bincode，无需再添加一套二进制持久化格式。RecurseX 负责 DNS；单调超时和缓存寿命继续使用标准库 Instant / Duration，不能用墙上时钟替代。
+内容、图片和媒体请求使用 Reqwest 0.12 / Rustls 0.23。Rustls 根据服务器证书构建验证路径，检查签名、有效期和目标名称；信任锚来自系统证书库与 webpki-roots。交叉签名回归覆盖完整 GTS 链、错误域名、过期和损坏签名。没有截短链、固定信任叶证书或跳过验证的分支。
 
-## 官方 Courierust 与受限功能
+`net.rs` 负责 URL、凭据、重定向和客户端缓存；`transport.rs` 负责连接及有界响应。直连使用已经检查的 DNS 地址，保留原 Host 和 TLS 目标名；客户端按来源与安全模式隔离，缓存 30 秒。自动重定向、自动 Referer 与传输层重试关闭。业务层只对允许重试的幂等操作重试，写操作不重放。
 
-出站 HTTP 仅使用 crates.io 发布的 Courierust 1.1.2；RecurseX 0.2.5 共用同一版本。仓库不保留 vendor、源码分支或 `[patch.crates-io]`。应用适配层只调用公开的 `courierust_net::connect`、`H1Connection::from_socket` / `send`，不复制或修改第三方协议实现。
+HTTP/SOCKS5 代理按显式配置、环境和 Windows 固定系统设置选取，失败不偷偷直连。代理是受信任的网络中间人：HTTP CONNECT 和 socks5h 可能在代理端解析域名，客户端不能证明代理内部使用了本机检查过的地址。远程部署应在出口代理隔离私网与元数据地址。PAC 和移动端 Wi-Fi 代理自动发现尚未实现。
 
-直连保留 RecurseX 解析、全部地址检查、连接地址固定和原域名 Host / SNI / 证书验证。每次重定向重新检查目标，协议使用 HTTP/1.1 和 identity 编码。地址配置缓存 30 秒，按安全模式、协议、主机及端口隔离；已验证地址按 IPv6 / IPv4 交错排列，最多保留 16 个连接候选；TCP 连接失败后尝试下一个地址，每次最多 1.5 秒，且不超过请求总期限。成功地址成为该客户端的下次首选。TLS 验证失败直接终止，不通过换证书策略掩盖问题；当前没有并行地址竞速。
+适配层采用可取消的异步 I/O。API/图片最多四个请求持有许可，完整响应最多 8 MiB，总等待最多 20 秒。媒体另有两个许可，按消费者需求读入，每次向网关交付不超过 32 KiB，不缓冲整个视频。连接超时 8 秒，读取停滞超时 20 秒。每个来源最多两个空闲连接，15 秒回收。
 
-以下限制是当前实现的真实边界：
+媒体 Range 直接转发，沿一个上游响应流式交付，不再通过多个条件 Range 人工拼接，也不要求强 ETag。中途错误终止当前响应，交由播放器决定后续操作。HLS 清单改写最多缓冲 2 MiB，分片、密钥和初始化段经同一受控流式入口传输。
 
-- **单个 HTTP 响应仍完整缓冲。** 官方 HTTP/1 接口的单响应上限为 8 MiB、响应头为 64 KiB。直接视频入口新增按需 Range 连续读取：每个请求最多 1 MiB，后续请求携带强 ETag 的 `If-Match`，逐段校验最终 URL、ETag、总长度、起止位置和实际载荷长度。完整视频可超过 8 MiB，播放器不必等待整文件。支持明确区间、开放区间和尾部区间；取消后不再发起后续请求。资源变化、缺少强 ETag 或 Range 响应不一致立即停止；不拼接未知版本的数据。服务器忽略 Range 时仍只接受 8 MiB 内的普通响应。图片、HLS 分片缓存路径仍受单响应上限约束。
-- **不支持应用代理。** 官方高层代理接口不能注入经过校验的目标地址。`HGHUB_PROXY`、环境代理或 Windows 固定系统代理经绕过规则选中后，适配器明确拒绝请求，不偷偷直连。PAC、移动端 Wi-Fi 代理自动发现也未实现；系统 VPN/TUN 由操作系统接管，不等同于应用代理。
-- **证书路径存在上游限制。** 官方验证器对部分交叉签名链不能在较早的本地信任锚终止；随包 Mozilla CA 验证固定线路 2 的历史证书夹具仍返回错误。不会关闭验证、信任叶证书或截短服务器证书链来掩盖问题。可用线路以内容接口实测为准。
-- **仅复用已完成验证的 HTTP/1 连接。** 每个来源最多 2 个空闲连接，全局最多 8 个；空闲 15 秒后不再使用，取放时惰性回收，来源客户端淘汰时关闭。复用前检查连接状态并重新设置请求期限。只有复用连接在未收到任何响应字节前断开时，GET 才允许重新连接一次；POST 或部分响应绝不由适配器重放。新连接创建独立 TLS connector，不共享恢复票据。RecurseX 自身 DoH 会话仍由正式库管理，未宣称修复其内部会话恢复。
+## DNS 与数据
 
-最多 4 个出站请求持有许可，许可覆盖阻塞工作和未消费的响应；调用方取消不会提前释放仍在运行的阻塞任务。排队和请求的外部总等待最多 20 秒，底层连接/握手也有超时；正在阻塞的任务不能强制中断。响应消费完毕或丢弃后释放许可。该限额不是整个进程的内存上限，库内部副本、播放器缓存和网关缓存另计。客户端配置构建并发上限为 4，读取信任库不占用 Tokio 事件线程。
+RecurseX 0.2.6 保留系统解析与有界 DoH 回退；其 Courierust 1.1.2 仅用于 DNS 加密上游，不再承担内容线路 TLS。系统信任库不可读取或为空时，DNS 使用随包 Mozilla CA。该包是公开证书数据，不是第三方源码。
 
-`rust/assets/cacert.pem` 是公开信任锚数据，证书测试夹具也是公开数据，不是第三方源码副本；保留它们以支持无法读取系统信任库的平台和可复现验证。信任包来源、许可证与更新方法见 assets 内说明。
+只启用 `std`、`doh`、`persist`，不编译应用未使用的 DoT、DoH3、DoQ 与 DNSSEC 验证。加密解析明确禁止明文递归；同一地址族按配置顺序尝试上游，不进行上游竞速，最多接触配置中的 1–4 个 IP。A/AAAA 仍并行查询。TLS 身份验证不等于 DNSSEC 验证，诊断明确返回 `dnssec_validation: false`。
 
-HTTP 协议类型通过 Axum 导出使用，不再直接声明 http。Axum 提供回环媒体及 Web 服务，tower-http 仅在 server feature 下提供静态文件服务；原生应用不编译这项 Web 静态服务依赖。
+NextJson 处理业务 JSON 与 DNS 配置；RustBinary 供 RecurseX 持久化缓存使用。tzcraft 处理 UTC 格式化，单调超时使用 Instant / Duration。Axum 提供回环网关和 Web 服务，tower-http 静态文件功能仅在 server feature 下编译。
 
-采用 Rust 2024，AES 0.9、Rand 0.10 与 Base64 0.23 的接口已适配。具体解析版本保存在 Cargo.lock；跨主版本升级需要代码迁移，不能把锁文件刷新描述为所有依赖均为上游最新版本。
+## 界面与媒体
 
-## 尚需上游正式版本提供的能力
+Material 3 Expressive 组件由 material_3_expressive 与 material_ui 提供。Google Sans 用于界面，Google Sans Code 用于等宽诊断文字，Noto Sans SC 回退中文；字体离线打包并保留 OFL。来源为 [Google Fonts](https://github.com/google/fonts/tree/main/ofl/googlesans) 和 [Google Sans Code](https://github.com/google/fonts/tree/main/ofl/googlesanscode)。Google Sans 是比例字体，不通过修改字形冒充等宽字体。
 
-要同时支持任意大小 HTTP/1 响应、固定目标地址的应用代理以及目前失败的交叉签名链，需要 Courierust 发布对应能力：有界、可取消的响应体读取接口；代理目标地址与 TLS 原域名分离的公开接口；能够从服务器链构建到已有信任锚的证书路径验证。目前不会通过复制协议源码、关闭校验或把全量缓冲称为流式来替代这些能力。
+许可证使用 flutter_markdown_plus 渲染，标题有语义标记，内部链接定位章节，外链只接受 HTTPS。正文直接读取 LICENSE，不改写授权条款。
 
-## 播放全屏
-
-FullscreenSession 独立管理系统呈现状态，详情和帖子播放器共用它。移动端隐藏系统栏并允许传感器选择横竖方向；桌面端调用媒体插件的原生窗口全屏；Web 使用浏览器 Fullscreen API，仍受浏览器用户手势限制。退出页面恢复系统 UI。
-
-CinemaLayout 在竖屏预留控制区，在横屏将控制区叠放到视频之上，避免标题、进度与按钮把视频高度挤空。大字号控制区可以滚动。平台 API 是否最终获准、浏览器 Escape 与移动设备旋转的完整行为仍需对应平台实测，不能由布局测试代替。
-
-网关改写后的 HLS 地址保留媒体扩展名，避免 FFmpeg 拒绝缺少扩展名的分片；扩展名不参与授权，目标仍执行完整 URL、DNS 和重定向校验。原生库统一从应用包加载，不再优先使用当前工作目录的 `rust/target/release`，避免集成测试和开发运行误加载旧 DLL。
+media_kit 管理解码，页面共用 PlaybackSession 和 FullscreenSession。播放器按需创建，未播放时不初始化解码器。横竖屏保持播放器槽位稳定；浏览器全屏仍受用户手势限制。

@@ -20,4 +20,3 @@ mod json_http;
 
 mod proxy;
 mod transport;
-mod transport_connection;

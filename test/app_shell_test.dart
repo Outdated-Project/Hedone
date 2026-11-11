@@ -4,11 +4,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/app.dart';
-import 'package:hghub/core/app_model.dart';
-import 'package:hghub/data/repository.dart';
-import 'package:hghub/data/transport.dart';
-import 'package:hghub/ui/design.dart';
+import 'package:hedone/app.dart';
+import 'package:hedone/core/app_model.dart';
+import 'package:hedone/data/repository.dart';
+import 'package:hedone/data/transport.dart';
+import 'package:hedone/ui/design.dart';
+import 'package:hedone/ui/aurora_scene.dart';
 
 import 'layout_test.dart' show MemoryPreferences, FixtureTransport;
 
@@ -28,7 +29,7 @@ void main() {
       ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
     await icons.load();
     for (final entry in {
-      'Roboto Flex': 'robotoflex',
+      'Google Sans': 'googlesans',
       'Noto Sans SC': 'notosanssc',
     }.entries) {
       final loader = FontLoader(entry.key)
@@ -55,7 +56,7 @@ void main() {
       await tester.pumpWidget(
         RepaintBoundary(
           key: boundary,
-          child: HGhubApp(model: model),
+          child: HedoneApp(model: model),
         ),
       );
       await tester.pump();
@@ -146,18 +147,12 @@ void main() {
         Repository(FixtureTransport()),
         MemoryPreferences(),
       );
-      await tester.pumpWidget(HGhubApp(model: model));
+      await tester.pumpWidget(HedoneApp(model: model));
       await tester.pumpAndSettle();
-      double opacity() => tester
-          .widget<Opacity>(
-            find
-                .ancestor(
-                  of: find.text('发现好故事'),
-                  matching: find.byType(Opacity),
-                )
-                .first,
-          )
-          .opacity;
+      double opacity() =>
+          (tester.widget<Flow>(find.byType(Flow).first).delegate
+                  as AuroraSceneDelegate)
+              .opacity(0);
       await tester.tap(find.text('搜索').last);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 120));
@@ -182,7 +177,7 @@ void main() {
   testWidgets('expired service replaces an open detail route', (tester) async {
     final transport = ExpiringTransport();
     final model = AppModel(Repository(transport), MemoryPreferences());
-    await tester.pumpWidget(HGhubApp(model: model));
+    await tester.pumpWidget(HedoneApp(model: model));
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     final route = AuroraMotion.open<void>(

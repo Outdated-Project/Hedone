@@ -1,21 +1,26 @@
 import 'dart:io';
 import 'dart:convert';
 
+import 'package:hedone/app.dart';
+import 'package:hedone/core/app_model.dart';
+import 'package:hedone/core/preferences.dart';
+import 'package:hedone/features/license.dart';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:hghub/core/native_runtime.dart';
-import 'package:hghub/core/fullscreen_session.dart';
-import 'package:hghub/src/rust/bridge.dart' as bridge;
+import 'package:hedone/core/native_runtime.dart';
+import 'package:hedone/core/fullscreen_session.dart';
+import 'package:hedone/src/rust/bridge.dart' as bridge;
 import 'package:media_kit/media_kit.dart';
-import 'package:hghub/core/playback_session.dart';
-import 'package:hghub/data/repository.dart';
-import 'package:hghub/data/transport_native.dart';
-import 'package:hghub/ui/design.dart';
-import 'package:hghub/ui/episode_pager.dart';
-import 'package:hghub/ui/cinema_layout.dart';
-import 'package:hghub/ui/playback_controls.dart';
-import 'package:hghub/data/models.dart';
+import 'package:hedone/core/playback_session.dart';
+import 'package:hedone/data/repository.dart';
+import 'package:hedone/data/transport_native.dart';
+import 'package:hedone/ui/design.dart';
+import 'package:hedone/ui/episode_pager.dart';
+import 'package:hedone/ui/cinema_layout.dart';
+import 'package:hedone/ui/playback_controls.dart';
+import 'package:hedone/data/models.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 void main() {
@@ -23,7 +28,7 @@ void main() {
   testWidgets('packaged native library initializes and enforces URL policy', (
     tester,
   ) async {
-    final dir = await Directory.systemTemp.createTemp('hghub-bridge-');
+    final dir = await Directory.systemTemp.createTemp('hedone-bridge-');
     try {
       await initializeNativeRuntime();
       final boot = jsonDecode(
@@ -62,9 +67,9 @@ void main() {
       );
       expect(Uri.parse(image).host, '127.0.0.1');
       expect(Uri.parse(image).pathSegments.first.length, 64);
-      const liveBase = String.fromEnvironment('HGHUB_LIVE_BASE');
+      const liveBase = String.fromEnvironment('HEDONE_LIVE_BASE');
       if (liveBase.isNotEmpty) {
-        if (const bool.fromEnvironment('HGHUB_CAPTURE_DIAGNOSTICS')) {
+        if (const bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')) {
           await bridge.request(payload: '{"op":"log_set","enabled":true}');
         }
         await bridge.request(
@@ -82,12 +87,12 @@ void main() {
         final session = PlaybackSession(Repository(NativeTransport()));
         final player = session.player;
         final decoderErrors = player.stream.error.listen((error) {
-          if (const bool.fromEnvironment('HGHUB_CAPTURE_DIAGNOSTICS')) {
+          if (const bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')) {
             debugPrint(error.replaceAll(RegExp(r'https?://\S+'), '[media]'));
           }
         });
         final decoderLog = player.stream.log.listen((event) {
-          if (const bool.fromEnvironment('HGHUB_CAPTURE_DIAGNOSTICS')) {
+          if (const bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')) {
             debugPrint(
               event.toString().replaceAll(RegExp(r'https?://\S+'), '[media]'),
             );
@@ -100,7 +105,7 @@ void main() {
         Future<void>? switched;
         final videoKey = GlobalKey();
         final viewport = ValueNotifier(const Size(720, 360));
-        const physicalRotation = bool.fromEnvironment('HGHUB_DEVICE_ROTATION');
+        const physicalRotation = bool.fromEnvironment('HEDONE_DEVICE_ROTATION');
         final presentation = FullscreenSession();
         try {
           if (physicalRotation) {
@@ -265,8 +270,44 @@ void main() {
           }
         }
       }
+      // Exercise the real app shell and bundled document through the already
+      // initialized temporary runtime, without reading account credentials.
+      final model = AppModel(
+        Repository(_InitializedTransport()),
+        DevicePreferences(),
+      );
+      await tester.pumpWidget(HedoneApp(model: model));
+      for (
+        var frame = 0;
+        frame < 100 && find.text('发现好故事').evaluate().isEmpty;
+        frame++
+      ) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.text('发现好故事'), findsOneWidget);
+      // Collapsed desktop rails expose the icon; their text is intentionally
+      // outside the hit-test area at intermediate window widths.
+      await tester.tap(find.byIcon(Icons.tune_rounded).last);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.text('震动反馈'), findsOneWidget);
+      await tester.ensureVisible(find.text('许可证'));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.text('许可证').hitTestable(), findsOneWidget);
+      await tester.tap(find.text('许可证'));
+      for (
+        var frame = 0;
+        frame < 50 && find.byType(LicenseScreen).evaluate().isEmpty;
+        frame++
+      ) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byType(LicenseScreen), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      model.dispose();
     } finally {
-      if (const bool.fromEnvironment('HGHUB_CAPTURE_DIAGNOSTICS')) {
+      if (const bool.fromEnvironment('HEDONE_CAPTURE_DIAGNOSTICS')) {
         final log = File('${dir.path}/playback.log');
         if (await log.exists()) {
           await Directory('build/qa').create(recursive: true);
@@ -276,4 +317,11 @@ void main() {
       await dir.delete(recursive: true);
     }
   });
+}
+
+class _InitializedTransport extends NativeTransport {
+  @override
+  Future<Map<String, dynamic>> initialize() async =>
+      jsonDecode(await bridge.request(payload: '{"op":"boot"}'))
+          as Map<String, dynamic>;
 }

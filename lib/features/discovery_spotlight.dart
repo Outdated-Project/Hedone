@@ -2,10 +2,12 @@ import '../core/app_model.dart';
 import '../data/models.dart';
 import '../ui/design.dart';
 import '../ui/poster.dart';
+import '../ui/haptics.dart';
 import 'detail.dart';
 
-/// A single, static feature card. Discovery never autoplays a decoder.
-class DiscoverySpotlight extends StatelessWidget {
+/// Editorial surface backed exclusively by the current feed; no autoplay or
+/// decorative blur/shader runs behind a scrolling catalogue.
+class DiscoverySpotlight extends StatefulWidget {
   const DiscoverySpotlight({
     required this.model,
     required this.item,
@@ -14,68 +16,117 @@ class DiscoverySpotlight extends StatelessWidget {
   final AppModel model;
   final VideoItem item;
   @override
-  Widget build(BuildContext context) => M3ECard(
-    variant: M3ECardVariant.filled,
-    padding: const EdgeInsets.all(20),
-    child: LayoutBuilder(
-      builder: (context, size) {
-        final width = (size.maxWidth * .33).clamp(84.0, 200.0);
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            SizedBox(
-              width: width,
-              height: width * 1.5,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Poster(repository: model.repository, url: item.cover),
-              ),
-            ),
-            const SizedBox(width: 20),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '从这部开始',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
+  State<DiscoverySpotlight> createState() => _DiscoverySpotlightState();
+}
+
+class _DiscoverySpotlightState extends State<DiscoverySpotlight> {
+  final _artwork = Object();
+  bool _opening = false;
+  Future<void> _open() async {
+    if (_opening) return;
+    _opening = true;
+    AppHaptics.selection(context);
+    try {
+      await AuroraMotion.open(
+        context,
+        DetailScreen(
+          model: widget.model,
+          item: widget.item,
+          heroTag: _artwork,
+          autoplay: true,
+          immersive: MediaQuery.sizeOf(context).width < 800,
+        ),
+      );
+    } finally {
+      _opening = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.primaryContainer,
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(32),
+          topRight: Radius.circular(32),
+          bottomLeft: Radius.circular(32),
+          bottomRight: Radius.circular(64),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: LayoutBuilder(
+          builder: (context, size) {
+            final width = (size.maxWidth * .38).clamp(72.0, 220.0);
+            return Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.auto_awesome_rounded,
+                        color: colors.onPrimaryContainer,
+                        size: 26,
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        '今日放映',
+                        style: text.labelLarge?.copyWith(
+                          color: colors.onPrimaryContainer,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        widget.item.title,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: text.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: colors.onPrimaryContainer,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        '${widget.item.episodes} 集 · 从这部开始',
+                        style: text.bodySmall?.copyWith(
+                          color: colors.onPrimaryContainer,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      M3EButton(
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('开始观看'),
+                        onPressed: _open,
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 12),
-                  Text(
-                    item.title,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${item.episodes} 集 · 上下滑动换集',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 20),
-                  M3EButton(
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('沉浸观看'),
-                    onPressed: () => AuroraMotion.open(
-                      context,
-                      DetailScreen(
-                        model: model,
-                        item: item,
-                        autoplay: true,
-                        immersive: true,
+                ),
+                const SizedBox(width: 16),
+                SizedBox(
+                  width: width,
+                  height: width * 1.5,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(24),
+                    child: GestureDetector(
+                      onTap: _open,
+                      child: PosterHero(
+                        tag: _artwork,
+                        repository: widget.model.repository,
+                        url: widget.item.cover,
                       ),
                     ),
                   ),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    ),
-  );
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
 }

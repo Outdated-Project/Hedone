@@ -19,6 +19,7 @@ use tokio::sync::{OnceCell, Semaphore};
 const SYSTEM_TIMEOUT: Duration = Duration::from_millis(1500);
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(7);
 const CONFIG_LIMIT: u64 = 16 * 1024;
+const ENGINE: &str = "RecurseX 0.2.6";
 static STATE: OnceCell<Arc<Dns>> = OnceCell::const_new();
 // A permit stays inside the blocking job even if the async caller is cancelled.
 static WORKERS: Semaphore = Semaphore::const_new(8);
@@ -101,6 +102,11 @@ fn make_config(settings: &Settings, dir: Option<&Path>) -> Result<ResolverConfig
         return Err("DNS 加密上游必须为 1–4 个".into());
     }
     let mut config = ResolverConfig::default();
+    // The application owns system-DNS fallback. This resolver must never
+    // escape the configured, certificate-verified DoH endpoints via recursion.
+    config.dns.privacy.encrypted_only = true;
+    config.dns.privacy.parallel = false;
+    config.dns.privacy.max_upstreams = settings.upstreams.len();
     config.engine.query_budget_ms = 5000;
     config.engine.timeout_ms = 1800;
     config.engine.max_total_attempts = 4;
@@ -139,13 +145,16 @@ fn make_config(settings: &Settings, dir: Option<&Path>) -> Result<ResolverConfig
     }
     // Courierust loads the OS store on supported hosts. Mobile sandbox hosts
     // without a readable store use the versioned Mozilla bundle, never verify=false.
-    config.engine.forwarder_roots = system_roots::load()
-        .or_else(|_| {
+    config.engine.forwarder_roots = match system_roots::load() {
+        Ok(roots) if !roots.is_empty() => roots,
+        _ => {
             let mut roots = RootStore::new();
-            roots.add_pem(include_str!("../assets/cacert.pem"))?;
-            Ok::<_, courierust::courierust_tls::TlsError>(roots)
-        })
-        .map_err(|_| "无法加载加密 DNS 的 CA 证书")?;
+            roots
+                .add_pem(include_str!("../assets/cacert.pem"))
+                .map_err(|_| "无法加载加密 DNS 的 CA 证书")?;
+            roots
+        }
+    };
     if let Some(dir) = dir {
         let mut persist = PersistConfig::new(dir.join("dns-cache.rxc"), 0);
         persist.frame_limit = 2 * 1024 * 1024;
@@ -289,13 +298,14 @@ fn combine(
 pub fn diagnostics() -> Value {
     match STATE.get() {
         Some(dns) => json!({
-            "engine": "RecurseX 0.2.5", "mode": dns.settings.mode,
+            "engine": ENGINE, "mode": dns.settings.mode,
             "transport": "DoH / Courierust 1.1.2", "certificate_verification": true,
+            "dnssec_validation": false,
             "system_answers": dns.system_answers.load(Ordering::Relaxed),
             "encrypted_answers": dns.encrypted_answers.load(Ordering::Relaxed),
             "failures": dns.failures.load(Ordering::Relaxed),
         }),
-        None => json!({"engine": "RecurseX 0.2.5", "initialized": false}),
+        None => json!({"engine": ENGINE, "initialized": false}),
     }
 }
 
@@ -340,6 +350,46 @@ mod tests {
         assert!(combine(Ok(vec![]), Err("NXDOMAIN".into()), 443).is_err());
     }
 
+    #[test]
+    fn encrypted_config_bounds_work_and_forbids_plaintext_fallback() {
+        let config = make_config(&Settings::default(), Some(Path::new("dns-test"))).unwrap();
+        assert!(config.dns.privacy.encrypted_only);
+        assert!(!config.dns.privacy.parallel);
+        assert_eq!(config.dns.privacy.max_upstreams, 2);
+        assert_eq!(config.engine.forwarders.len(), 2);
+        assert!(!config.engine.forwarder_roots.is_empty());
+        assert!(
+            config
+                .engine
+                .forwarders
+                .iter()
+                .all(|f| f.endpoint.proto == Proto::DoH)
+        );
+        assert_eq!(config.max_concurrent_refreshes, 0);
+        assert_eq!(config.cache.stale_window_secs, 0);
+        assert!(config.engine.query_budget_ms < LOOKUP_TIMEOUT.as_millis() as u64);
+        let persist = config.persist.unwrap();
+        assert_eq!(persist.save_interval_ms, 0);
+        assert_eq!(persist.frame_limit, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn encrypted_upstreams_reject_identity_mismatch_and_unbounded_lists() {
+        let mut settings = Settings::default();
+        settings.upstreams[0].host = "dns.alidns.com".into();
+        assert!(make_config(&settings, None).is_err());
+        settings.upstreams.clear();
+        assert!(make_config(&settings, None).is_err());
+        settings.upstreams = (0..5)
+            .map(|_| Upstream {
+                ip: "1.1.1.1".into(),
+                host: "1.1.1.1".into(),
+            })
+            .collect();
+        assert!(make_config(&settings, None).is_err());
+        assert!(nextjson::nextdecode::<Settings>(br#"{"verify":false}"#).is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires public DNS over HTTPS"]
     async fn live_encrypted_dns() {
@@ -353,7 +403,7 @@ mod tests {
             encrypted_answers: AtomicU64::new(0),
             failures: AtomicU64::new(0),
         });
-        let host = std::env::var("HGHUB_DNS_TEST_HOST").unwrap_or_else(|_| "example.com".into());
+        let host = std::env::var("HEDONE_DNS_TEST_HOST").unwrap_or_else(|_| "example.com".into());
         let addresses = encrypted(dns, host, RrType::A).await.unwrap();
         assert!(!addresses.is_empty());
         assert!(

@@ -1,4 +1,4 @@
-# HGhub 分流规则
+# Hedone 分流规则
 
 统计日期：2026-11-07。包含 5 条域名后缀规则和 3 条精确域名规则；没有已确认的固定服务端 IP/CIDR。规则只决定流量如何分流，不改变应用的账号信任或正文清洗策略。
 
@@ -15,31 +15,31 @@
 | 精确 | `api.github.com` | GitHub Release 更新元数据；`rust/src/api.rs` |
 | 精确 | `github.com` | 更新页面，用户点击后交给外部浏览器；`rust/src/api.rs` |
 
-CDN 和镜像三条后缀来自仓库已有样本，不能据此认定它们当前仍在使用。当前发布页在线核对返回 HTTP 403。API 返回的封面、播放地址，HLS 子清单、分片、密钥、重定向地址及镜像列表都可能引入新域名，因此这是一份源码已知目标清单，不是完整流量白名单。新域名应依据代理连接日志继续补充。
+CDN 和镜像三条后缀来自仓库已有样本，不能据此认定它们当前仍在使用。2026-11-11 的发布页镜像获取已通过；以下静态样本不等于当前全部镜像。API 返回的封面、播放地址，HLS 子清单、分片、密钥、重定向地址及镜像列表都可能引入新域名，因此这是一份源码已知目标清单，不是完整流量白名单。新域名应依据代理连接日志继续补充。
 
 GitHub 是共享基础设施，这两条精确规则也会匹配其他程序对同域名的访问。应用只打开更新网页，不自动下载更新包；外部浏览器下载时使用的其他 GitHub/CDN 域名未纳入本清单。
 
 ## Mihomo
 
-使用 [hghub.list](hghub.list)，这是 `classical` 行为、`text` 格式的规则集合。将 `rules` 目录放在 Mihomo 配置目录中，并合并以下配置；把 `PROXY` 替换成已有代理组名。规则应放在其他兜底规则之前。
+使用 [hedone.list](hedone.list)，这是 `classical` 行为、`text` 格式的规则集合。将 `rules` 目录放在 Mihomo 配置目录中，并合并以下配置；把 `PROXY` 替换成已有代理组名。规则应放在其他兜底规则之前。
 
 ```yaml
 rule-providers:
-  hghub:
+  hedone:
     type: file
     behavior: classical
     format: text
-    path: ./rules/hghub.list
+    path: ./rules/hedone.list
 
 rules:
-  - RULE-SET,hghub,PROXY
+  - RULE-SET,hedone,PROXY
 ```
 
 也可通过 HTTP 托管该文件后使用 `type: http`，填写实际 `url` 和更新周期。`.list` 不包含策略名，不要直接作为完整的 `rules:` 配置粘贴。
 
 ## sing-box
 
-使用 [hghub.json](hghub.json)，源规则集版本为 2，适用于 sing-box 1.10 及以上。将目录放在配置目录中，合并到现有 `route`；把 `proxy` 替换成实际出站标签，放在兜底规则之前。
+使用 [hedone.json](hedone.json)，源规则集版本为 2，适用于 sing-box 1.10 及以上。将目录放在配置目录中，合并到现有 `route`；把 `proxy` 替换成实际出站标签，放在兜底规则之前。
 
 ```json
 {
@@ -47,14 +47,14 @@ rules:
     "rule_set": [
       {
         "type": "local",
-        "tag": "hghub",
+        "tag": "hedone",
         "format": "source",
-        "path": "./rules/hghub.json"
+        "path": "./rules/hedone.json"
       }
     ],
     "rules": [
       {
-        "rule_set": ["hghub"],
+        "rule_set": ["hedone"],
         "action": "route",
         "outbound": "proxy"
       }
@@ -65,10 +65,10 @@ rules:
 
 以上路由动作写法适用于 sing-box 1.11 及以上；1.10 使用相同源规则集时，删除路由项中的 `"action": "route"`。
 
-需要二进制规则集时可使用已编译的 [hghub.srs](hghub.srs)，将配置的 `format` 改为 `binary`、`path` 改为 `./rules/hghub.srs`。修改 JSON 后重新编译：
+需要二进制规则集时可使用已编译的 [hedone.srs](hedone.srs)，将配置的 `format` 改为 `binary`、`path` 改为 `./rules/hedone.srs`。修改 JSON 后重新编译：
 
 ```sh
-sing-box rule-set compile --output rules/hghub.srs rules/hghub.json
+sing-box rule-set compile --output rules/hedone.srs rules/hedone.json
 ```
 
 ## IP/CIDR 与本地协议
@@ -85,6 +85,6 @@ sing-box rule-set compile --output rules/hghub.srs rules/hghub.json
 
 已使用 Mihomo v1.19.32 的 `-t` 和 sing-box v1.14.3 的 `check` 检查导入配置；确认 `.list` 与 `.json` 的 8 条目标一致，并对 sing-box 源规则及编译后的 `.srs` 完成 42 项正反匹配检查。验证临时目录已自动清理。
 
-## ??? DNS
+## 加密 DNS
 
-?? Rust ????? DNS ???????? RecurseX ????????? `223.5.5.5:443`?`1.1.1.1:443`?????? DoH ????????????????????????????DoH ??? IP ??????? IP SAN????? DNS ???????? TUN ??????????????????? `dns.json` ??? `system` ??????? DNS ?????????? [????](../docs/deployment.md)?
+RecurseX 的默认加密上游为 `223.5.5.5:443` 与 `1.1.1.1:443`。DoH 直接使用固定公网 IP，并验证证书中的 IP SAN。受管网络要求统一 DNS 时，在 `dns.json` 选择 `system`；配置见[部署说明](../docs/deployment.md)。

@@ -1,6 +1,7 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
+#include <filesystem>
 
 #include "flutter_window.h"
 #include "utils.h"
@@ -17,7 +18,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // plugins.
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-  flutter::DartProject project(L"data");
+  // Shortcuts and launchers need not use the installation folder as cwd.
+  // Resolve the Flutter bundle from the executable, never from cwd.
+  wchar_t executable_path[32768];
+  const DWORD path_length = ::GetModuleFileNameW(nullptr, executable_path, 32768);
+  if (path_length == 0 || path_length >= 32768) {
+    return EXIT_FAILURE;
+  }
+  const auto data_path = std::filesystem::path(executable_path).parent_path() / L"data";
+  flutter::DartProject project(data_path.wstring());
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
@@ -27,7 +36,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"HGhub", origin, size)) {
+  if (!window.Create(L"Hedone", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

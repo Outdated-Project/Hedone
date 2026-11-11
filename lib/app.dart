@@ -14,23 +14,33 @@ import 'features/browse.dart';
 import 'features/posts.dart';
 import 'features/settings.dart';
 import 'ui/design.dart';
+import 'ui/aurora_scene.dart';
+import 'ui/app_navigation.dart';
+import 'ui/brand_mark.dart';
 import 'ui/app_theme.dart';
+import 'ui/haptics.dart';
 import 'ui/feedback.dart';
 
-class HGhubApp extends StatefulWidget {
-  const HGhubApp({this.model, super.key});
+class HedoneApp extends StatefulWidget {
+  const HedoneApp({this.model, super.key});
   final AppModel? model;
   @override
-  State<HGhubApp> createState() => _HGhubAppState();
+  State<HedoneApp> createState() => _HedoneAppState();
 }
 
-class _HGhubAppState extends State<HGhubApp> {
+class _HedoneAppState extends State<HedoneApp> {
   late final AppModel _model =
       widget.model ??
       AppModel(Repository(createTransport()), DevicePreferences());
   late Future<void> _ready;
   final _navigator = GlobalKey<NavigatorState>();
   bool _serviceWasExpired = false;
+  late final _appearance = ValueNotifier((
+    _model.theme,
+    _model.reducedMotion,
+    _model.haptics,
+    _model.serviceExpired,
+  ));
   @override
   void initState() {
     super.initState();
@@ -39,6 +49,12 @@ class _HGhubAppState extends State<HGhubApp> {
   }
 
   void _serviceChanged() {
+    _appearance.value = (
+      _model.theme,
+      _model.reducedMotion,
+      _model.haptics,
+      _model.serviceExpired,
+    );
     final expired = _model.serviceExpired;
     if (expired && !_serviceWasExpired) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -53,16 +69,17 @@ class _HGhubAppState extends State<HGhubApp> {
   @override
   void dispose() {
     _model.removeListener(_serviceChanged);
+    _appearance.dispose();
     if (widget.model == null) _model.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: _model,
+    listenable: _appearance,
     builder: (context, _) => MaterialApp(
       navigatorKey: _navigator,
-      title: 'HGhub · 黄果',
+      title: 'Hedone · 黄果',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
@@ -89,7 +106,10 @@ class _HGhubAppState extends State<HGhubApp> {
           disableAnimations:
               MediaQuery.disableAnimationsOf(context) || _model.reducedMotion,
         ),
-        child: AppTheme.scope(context, child!),
+        child: HapticScope(
+          enabled: _model.haptics,
+          child: AppTheme.scope(context, child!),
+        ),
       ),
       home: FutureBuilder<void>(
         future: _ready,
@@ -174,15 +194,11 @@ class _StartupScreenState extends State<StartupScreen> {
                 Center(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(24),
-                    child: Image.asset(
-                      'assets/brand.png',
-                      width: 80,
-                      height: 80,
-                    ),
+                    child: const BrandMark(size: 80),
                   ),
                 ),
                 Text(
-                  'HGhub',
+                  'Hedone',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.headlineLarge,
                 ),
@@ -243,9 +259,10 @@ class _AppShellState extends State<AppShell>
     value: 1,
   );
   int _selected = 0, _revision = 0;
-  List<double> _starts = [1, 0, 0, 0, 0];
+  AuroraSceneTransition _transition = AuroraSceneTransition.settled(0, 5);
   bool _active = true;
   final Map<int, Widget> _pages = {};
+  final List<int> _recency = [0];
   static const _labels = ['发现', '搜索', '社区', '片库', '设置'];
   static const _icons = [
     Icons.explore_outlined,
@@ -258,8 +275,18 @@ class _AppShellState extends State<AppShell>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _scene.addStatusListener(_settled);
     _revision = widget.model.identityRevision;
     widget.model.addListener(_changed);
+  }
+
+  void _settled(AnimationStatus status) {
+    if (status == AnimationStatus.completed && mounted) {
+      setState(() {
+        final retained = _recency.take(2).toSet();
+        _pages.removeWhere((index, _) => !retained.contains(index));
+      });
+    }
   }
 
   void _changed() {
@@ -324,21 +351,18 @@ class _AppShellState extends State<AppShell>
   );
   void _select(int value) {
     if (_selected == value) return;
-    // Capture the current blend before retargeting: rapid navigation never
-    // resets a partially visible page to full opacity.
-    _starts = List.generate(5, _opacity);
+    AppHaptics.selection(context);
+    _transition = _transition.retarget(value, _scene.value);
+    _recency
+      ..remove(value)
+      ..insert(0, value);
     setState(() => _selected = value);
     if (MediaQuery.disableAnimationsOf(context)) {
       _scene.value = 1;
+      _settled(AnimationStatus.completed);
     } else {
       _scene.forward(from: 0);
     }
-  }
-
-  double _opacity(int index) {
-    final progress = AuroraMotion.curve.transform(_scene.value);
-    return _starts[index] +
-        ((_selected == index ? 1.0 : 0.0) - _starts[index]) * progress;
   }
 
   @override
@@ -371,39 +395,45 @@ class _AppShellState extends State<AppShell>
       },
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final wide = constraints.maxWidth >= 800;
+          final wide = usesNavigationSidebar(
+            defaultTargetPlatform,
+            MediaQuery.sizeOf(context),
+          );
           _page(_selected);
           final body = KeyedSubtree(
             key: ValueKey(_revision),
-            child: AnimatedBuilder(
-              animation: _scene,
-              builder: (context, _) => Stack(
-                fit: StackFit.expand,
-                children: List.generate(5, (i) {
-                  final opacity = _opacity(i).clamp(0.0, 1.0);
-                  return Offstage(
-                    offstage: opacity == 0 && i != _selected,
-                    child: IgnorePointer(
-                      ignoring: i != _selected,
-                      child: ExcludeSemantics(
-                        excluding: i != _selected,
-                        child: TickerMode(
-                          enabled: _active && i == _selected,
-                          child: Opacity(
-                            opacity: opacity,
-                            child: FractionalTranslation(
-                              translation: Offset(0, .014 * (1 - opacity)),
-                              child: RepaintBoundary(
-                                child: _pages[i] ?? const SizedBox.shrink(),
-                              ),
+            child: Flow(
+              delegate: AuroraSceneDelegate(
+                animation: _scene,
+                transition: _transition,
+              ),
+              children: List.generate(5, (i) {
+                final hidden =
+                    i != _selected &&
+                    (_scene.isCompleted || !_transition.visible(i));
+                return Offstage(
+                  offstage: hidden,
+                  child: IgnorePointer(
+                    ignoring: i != _selected,
+                    child: ExcludeSemantics(
+                      excluding: i != _selected,
+                      child: TickerMode(
+                        enabled: _active && i == _selected,
+                        child: Focus(
+                          canRequestFocus: i == _selected,
+                          descendantsAreFocusable: i == _selected,
+                          child: RepaintBoundary(
+                            child: ColoredBox(
+                              color: Theme.of(context).scaffoldBackgroundColor,
+                              child: _pages[i] ?? const SizedBox.shrink(),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  );
-                }),
-              ),
+                  ),
+                );
+              }),
             ),
           );
           return Scaffold(
@@ -413,9 +443,8 @@ class _AppShellState extends State<AppShell>
                 children: [
                   if (wide)
                     M3ENavigationRail(
-                      type: constraints.maxWidth >= 1280
-                          ? M3ENavigationRailType.expanded
-                          : M3ENavigationRailType.collapsed,
+                      type: M3ENavigationRailType.alwaysExpand,
+                      expandedWidth: 220,
                       selectedIndex: _selected,
                       onDestinationSelected: _select,
                       leading: Padding(
@@ -424,15 +453,11 @@ class _AppShellState extends State<AppShell>
                           children: [
                             ClipRRect(
                               borderRadius: BorderRadius.circular(18),
-                              child: Image.asset(
-                                'assets/brand.png',
-                                width: 48,
-                                height: 48,
-                              ),
+                              child: const BrandMark(),
                             ),
                             const SizedBox(height: 12),
                             Text(
-                              'HGhub',
+                              'Hedone',
                               style: Theme.of(context).textTheme.titleLarge,
                             ),
                           ],
@@ -463,7 +488,7 @@ class _AppShellState extends State<AppShell>
             ),
             bottomNavigationBar: wide
                 ? null
-                : M3ENavigationBar(
+                : CapsuleNavigationBar(
                     selectedIndex: _selected,
                     onDestinationSelected: _select,
                     destinations: List.generate(

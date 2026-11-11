@@ -137,8 +137,8 @@ class _NetworkDiagnosticsScreenState extends State<NetworkDiagnosticsScreen> {
           const SizedBox(height: 12),
           Text(
             object(report['transport'])['progressive_range'] == true
-                ? '支持 Range 和强 ETag 的视频可按 1 MiB 连续分段读取；其他响应仍受 8 MiB 限制。应用代理暂不支持。'
-                : '当前传输限制：每次响应最多 8 MiB，完整接收后才交给播放器；较大的视频文件或分片无法播放。应用代理暂不支持。',
+                ? '支持 Range 和强 ETag 的视频按需分段读取；其他单次响应上限为 8 MiB。'
+                : '每次响应最多 8 MiB，完整接收后才交给播放器。',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -171,7 +171,8 @@ class _NetworkDiagnosticsScreenState extends State<NetworkDiagnosticsScreen> {
             padding: const EdgeInsets.only(top: 20),
             child: SelectableText(
               const JsonEncoder.withIndent('  ').convert(report),
-              style: Theme.of(context).textTheme.bodySmall,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(fontFamily: 'Google Sans Code'),
             ),
           )
         : const SizedBox(width: double.infinity);

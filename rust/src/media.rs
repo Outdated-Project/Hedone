@@ -522,10 +522,10 @@ mod tests {
 
     /// Explicit, read-only upstream smoke test. Never print signed media addresses.
     #[tokio::test]
-    #[ignore = "联网测试：需要 HGHUB_TEST_VIDEO_ID，手动运行"]
+    #[ignore = "联网测试：需要 HEDONE_TEST_VIDEO_ID，手动运行"]
     async fn live_play_chain() {
-        let id = std::env::var("HGHUB_TEST_VIDEO_ID")
-            .expect("需要 HGHUB_TEST_VIDEO_ID")
+        let id = std::env::var("HEDONE_TEST_VIDEO_ID")
+            .expect("需要 HEDONE_TEST_VIDEO_ID")
             .parse::<i64>()
             .expect("内容编号无效");
         assert!(id > 0);
@@ -649,12 +649,12 @@ mod tests {
 
     /// 联网测试：默认跳过。封面地址带时效签名，不能硬编码进仓库，
     /// 需要用当次上游返回的地址显式传入：
-    /// `HGHUB_TEST_COVER_URL='https://…?auth_key=…' cargo test --lib -- --ignored`
+    /// `HEDONE_TEST_COVER_URL='https://…?auth_key=…' cargo test --lib -- --ignored`
     #[tokio::test]
-    #[ignore = "联网测试：需要 HGHUB_TEST_COVER_URL，手动用 --ignored 运行"]
+    #[ignore = "联网测试：需要 HEDONE_TEST_COVER_URL，手动用 --ignored 运行"]
     async fn cover_decrypt_works() {
-        let url = std::env::var("HGHUB_TEST_COVER_URL")
-            .expect("需要设置 HGHUB_TEST_COVER_URL 为当前有效的封面地址");
+        let url = std::env::var("HEDONE_TEST_COVER_URL")
+            .expect("需要设置 HEDONE_TEST_COVER_URL 为当前有效的封面地址");
         match load_image(&url).await {
             Ok((kind, bytes)) => {
                 println!("kind={kind} len={}", bytes.len());

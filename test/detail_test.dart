@@ -1,10 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/core/app_model.dart';
-import 'package:hghub/data/models.dart';
-import 'package:hghub/data/repository.dart';
-import 'package:hghub/features/detail.dart';
-import 'package:hghub/ui/app_theme.dart';
-import 'package:hghub/ui/design.dart';
+import 'package:hedone/core/app_model.dart';
+import 'package:hedone/data/models.dart';
+import 'package:hedone/data/repository.dart';
+import 'package:hedone/features/detail.dart';
+import 'package:hedone/features/browse.dart';
+import 'package:hedone/ui/app_theme.dart';
+import 'package:hedone/ui/design.dart';
 
 import 'layout_test.dart' show FixtureTransport, MemoryPreferences;
 
@@ -27,6 +28,60 @@ class DetailFixture extends FixtureTransport {
 }
 
 void main() {
+  testWidgets(
+    'repeated card taps open one route and interrupted entry does not start playback',
+    (tester) async {
+      final model = AppModel(Repository(DetailFixture()), MemoryPreferences());
+      final observer = _RouteCounter();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light,
+          navigatorObservers: [observer],
+          builder: (context, child) => AppTheme.scope(context, child!),
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 240,
+                height: 360,
+                child: VideoTile(
+                  model: model,
+                  item: const VideoItem(
+                    id: 1,
+                    title: '共享封面测试',
+                    cover: '',
+                    episodes: 12,
+                    tags: [],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final open = tester
+          .widget<M3ECard>(
+            find.descendant(
+              of: find.byType(VideoTile),
+              matching: find.byType(M3ECard),
+            ),
+          )
+          .onPressed!;
+      // Invoke two already-dispatched interactions; a pushed route correctly
+      // blocks later hit tests on the originating card.
+      open();
+      open();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+      expect(observer.pushes, 2); // Home plus one detail.
+      Navigator.of(tester.element(find.byType(DetailScreen))).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(DetailScreen), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      model.dispose();
+    },
+  );
   testWidgets('detail and comments work without allocating a decoder', (
     tester,
   ) async {
@@ -72,4 +127,12 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     model.dispose();
   });
+}
+
+class _RouteCounter extends NavigatorObserver {
+  int pushes = 0;
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pushes++;
+  }
 }

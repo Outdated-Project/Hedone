@@ -166,22 +166,22 @@ pub async fn get(
     accept: Option<&str>,
     referer: Option<&str>,
 ) -> Result<crate::transport::Response, String> {
-    get_request(raw, timeout, accept, referer, None, None).await
+    get_request(raw, timeout, accept, referer, None, None, false).await
 }
 
-pub(crate) async fn get_media_range(
+pub(crate) async fn get_media_stream(
     raw: &str,
     referer: &str,
-    range: &str,
-    etag: Option<&str>,
+    range: Option<&str>,
 ) -> Result<crate::transport::Response, String> {
     get_request(
         raw,
         Duration::from_secs(20),
         None,
         Some(referer),
-        Some(range),
-        etag,
+        range,
+        None,
+        true,
     )
     .await
 }
@@ -192,6 +192,7 @@ async fn get_request(
     referer: Option<&str>,
     range: Option<&str>,
     if_match: Option<&str>,
+    streaming: bool,
 ) -> Result<crate::transport::Response, String> {
     tokio::time::timeout(timeout, async {
         let policy_error = |phase: &str, error: String| {
@@ -212,7 +213,7 @@ async fn get_request(
                 request = request.header("Referer", value);
             }
             if let Some(range) = range { request = request.header("Range", range); }
-            let response = request.send().await.map_err(|e| err_text(&e))?;
+            let response = if streaming { request.send_streaming().await } else { request.send().await }.map_err(|e| err_text(&e))?;
             if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 return Ok(response);
             }
@@ -336,14 +337,14 @@ pub async fn diagnose() -> Value {
         "host": host,
         "dns": dns,
         "resolver": crate::dns::diagnostics(),
-        "transport": {"library": "Courierust 1.1.2 (crates.io)", "pinned_direct": true, "address_fallback": true, "proxy": false, "upstream_streaming": false, "progressive_range": true, "range_window_bytes": crate::media_range::WINDOW, "max_response_bytes": 8 * 1024 * 1024, "max_in_flight": 4, "max_idle_connections": 8},
+        "transport": {"library": "Reqwest 0.12 / Rustls 0.23 (crates.io)", "pinned_direct": true, "address_fallback": true, "proxy": true, "upstream_streaming": true, "media_streams": 2, "media_chunk_bytes": 32768, "max_response_bytes": 8 * 1024 * 1024, "max_in_flight": 4, "max_idle_per_origin": 2},
         "http": http,
         "env": {
             "HTTP_PROXY": std::env::var("HTTP_PROXY").ok().map(|p| redact_proxy(&p)),
             "HTTPS_PROXY": std::env::var("HTTPS_PROXY").ok().map(|p| redact_proxy(&p)),
             "ALL_PROXY": std::env::var("ALL_PROXY").ok().map(|p| redact_proxy(&p)),
             "NO_PROXY": std::env::var("NO_PROXY").ok().map(|_| "[已配置，列表已隐藏]"),
-            "HGHUB_PROXY": std::env::var("HGHUB_PROXY").ok().map(|p| redact_proxy(&p)),
+            "HEDONE_PROXY": std::env::var("HEDONE_PROXY").ok().map(|p| redact_proxy(&p)),
         },
     })
 }

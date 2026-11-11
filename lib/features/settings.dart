@@ -5,10 +5,13 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/app_model.dart';
 import '../data/models.dart';
 import '../ui/design.dart';
+import '../ui/brand_mark.dart';
 import '../ui/feedback.dart';
 import '../ui/action_list_item.dart';
 import 'lines.dart';
 import 'network_diagnostics.dart';
+import 'license.dart';
+import '../ui/haptics.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({required this.model, super.key});
@@ -57,7 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _license() async {
     final text = await rootBundle.loadString('LICENSE');
     if (!mounted) return;
-    await _text('PolyForm Noncommercial 1.0.0', text);
+    await AuroraMotion.open(context, LicenseScreen(source: text));
   }
 
   Future<void> _dependencies() async {
@@ -70,12 +73,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       text.writeln();
     }
-    for (final font in ['robotoflex', 'notosanssc']) {
+    for (final font in ['notosanssc', 'googlesans', 'googlesanscode']) {
       text.writeln(await rootBundle.loadString('assets/fonts/$font-OFL.txt'));
     }
     for (final entry in {
-      'RecurseX 0.2.5': 'recurse-x',
+      'RecurseX 0.2.6': 'recurse-x',
       'Courierust 1.1.2': 'courierust',
+      'Reqwest 0.12': 'reqwest-mit',
+      'Rustls 0.23': 'rustls-isc',
       'NextJson 0.1.5 / RustBinary 0.1.10': 'apache-2.0',
       'Mozilla CA certificate bundle': 'mozilla-mpl-2.0',
     }.entries) {
@@ -95,7 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context,
       dialog: M3EDialog(
         title: available ? '发现新版本 ${result['latest']}' : '当前没有新版本',
-        content: Text(available ? plainText(result['notes']) : '当前版本 2.0.0'),
+        content: Text(available ? plainText(result['notes']) : '当前版本 1.0.1'),
         actions: [
           M3EButton(
             onPressed: () => Navigator.pop(context),
@@ -106,7 +111,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             M3EButton(
               onPressed: () => perform(context, () async {
                 await launchUrl(
-                  Uri.parse('https://github.com/Minireel/HGhub/releases'),
+                  Uri.parse(
+                    'https://github.com/Outdated-Project/HGhub/releases',
+                  ),
                   mode: LaunchMode.externalApplication,
                 );
               }),
@@ -182,6 +189,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ],
                             ),
                             M3EListItem(
+                              headline: '震动反馈',
+                              supportingText: '切换导航、筛选与播放手势时提供轻触反馈',
+                              leading: const Icon(Icons.vibration_rounded),
+                              trailing: M3ESwitch(
+                                value: model.haptics,
+                                onChanged: (v) => perform(context, () async {
+                                  await model.setHaptics(v);
+                                  if (v && context.mounted) {
+                                    AppHaptics.selection(context);
+                                  }
+                                }),
+                              ),
+                            ),
+                            M3EListItem(
                               headline: '减少动态效果',
                               supportingText: '同时遵循系统的减少动态效果设置',
                               trailing: M3ESwitch(
@@ -246,6 +267,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   }
                                 }),
                               ),
+                            ActionListItem(
+                              headline: '重置推荐偏好',
+                              supportingText: '猜你喜欢在本机按观看与搜索更新；重置后恢复随机探索',
+                              icon: Icons.auto_awesome_outlined,
+                              busy: _pending.contains('recommendations'),
+                              onTap: () => _run('recommendations', () async {
+                                model.recommendations.clear();
+                                await model.saveLibrary();
+                                if (context.mounted) {
+                                  M3ESnackbar.show(
+                                    context,
+                                    message: '推荐偏好已重置，下次刷新生效',
+                                  );
+                                }
+                              }),
+                            ),
                             if (!kIsWeb)
                               M3EListItem(
                                 headline: '播放诊断',
@@ -288,16 +325,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: Column(
                           children: [
                             M3EListItem(
-                              headline: 'HGhub 2.0.0',
+                              headline: 'Hedone 1.0.1',
                               supportingText:
                                   'Flutter × Rust · Material 3 Expressive',
                               leading: ClipRRect(
                                 borderRadius: BorderRadius.circular(12),
-                                child: Image.asset(
-                                  'assets/brand.png',
-                                  width: 48,
-                                  height: 48,
-                                ),
+                                child: const BrandMark(),
                               ),
                             ),
                             ActionListItem(
@@ -307,10 +340,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               onTap: () => _run('update', _update),
                             ),
                             M3EListItem(
-                              headline: '仅限非商业用途',
-                              supportingText:
-                                  'PolyForm Noncommercial License 1.0.0',
-                              leading: const Icon(Icons.gpp_good_outlined),
+                              headline: '许可证',
+                              supportingText: 'PolyForm Noncommercial 1.0.0',
+                              leading: const Icon(Icons.description_outlined),
+                              trailing: const Icon(Icons.chevron_right_rounded),
                               onTap: () => _run('license', _license),
                             ),
                             M3EListItem(
@@ -319,14 +352,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               onTap: () => _run('licenses', _dependencies),
                             ),
                           ],
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text(
-                          'NONCOMMERCIAL\n禁止商业使用，不提供商业授权。内容与第三方组件的权利归各自权利人；软件许可不授予第三方内容的使用权。',
-                          style: Theme.of(context).textTheme.bodySmall,
-                          textAlign: TextAlign.center,
                         ),
                       ),
                     ],

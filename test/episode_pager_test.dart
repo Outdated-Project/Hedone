@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/data/models.dart';
-import 'package:hghub/ui/design.dart';
-import 'package:hghub/ui/episode_pager.dart';
-import 'package:hghub/ui/episode_picker.dart';
-import 'package:hghub/ui/app_theme.dart';
+import 'package:hedone/data/models.dart';
+import 'package:hedone/ui/design.dart';
+import 'package:hedone/ui/episode_pager.dart';
+import 'package:hedone/ui/episode_picker.dart';
+import 'package:hedone/ui/app_theme.dart';
 
 void main() {
   testWidgets('500 episodes keep one video and commit only settled gestures', (

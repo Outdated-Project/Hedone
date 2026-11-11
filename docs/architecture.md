@@ -12,11 +12,11 @@
 
 ## 动效与渲染
 
-Aurora 是应用内动效约定，不是另造的 Flutter 引擎。全局转场时间和曲线集中在 `ui/design.dart`。Material 3 Expressive 负责按钮弹簧、形状变化、导航指示器和卡片容器转场；主导航共享单个页面动画控制器。
+Aurora 是应用内动效与资源调度层，不是另造的 Flutter 引擎。全局时间、空间弹簧和效果曲线集中在 `ui/design.dart`；主导航共享单个控制器，由 `ui/aurora_scene.dart` 在绘制阶段提交变换。Material 3 Expressive 负责按钮形状与导航指示器，封面通过 Hero 连接详情。导航最多保留最近两个页面，媒体解码延后至入场结束。
 
 Flutter 的 SchedulerBinding/Ticker 承担帧调度。未显示的页面通过 TickerMode 停止动画，应用进入后台时暂停播放。滚动网格按需构建，图片与视频有独立重绘边界；播放进度只刷新控制区，不每帧重建页面。减少动态效果同时遵循应用设置与系统设置。
 
-字体随应用提供 Roboto Flex 和 Noto Sans SC，使用 M3E 的字号与强调层级；没有启动时字体请求。界面只使用 `material_ui` 和 `material_3_expressive`，媒体插件的内置控制条关闭。
+字体随应用提供 Google Sans、Google Sans Code 和 Noto Sans SC，使用 M3E 的字号与强调层级；没有启动时字体请求。界面只使用 `material_ui` 和 `material_3_expressive`，媒体插件的内置控制条关闭。
 
 `AppTheme` 生成完整的浅色和深色 Material 主题；Expressive tokens 从当前插值中的主题投影，页面底色、文字、卡片和弹窗使用同一份颜色。避免两个主题控制器分别切换，造成深色组件叠在浅色背景上。主导航保留页面状态；连续切换时从当前各页透明度继续混合，旧页面退出后停止绘制并排除交互、语义与动画。
 
@@ -39,3 +39,5 @@ NextJson 的派生类型读取最多 16 KiB 的 `dns.json`；Courierust 验证 D
 Rust 媒体服务只监听随机本机端口，原生 URL 带 256 位随机密钥。HLS 子列表、密钥、分片和初始化段全部重写回受控入口；分片支持单区间 Range，非 HLS 媒体按流传输。网络层验证目标、DNS 答案和每一跳重定向，禁止向镜像提交账号凭据。
 
 浏览器的同源媒体入口额外要求有效服务会话。帖子正文转换成 Flutter 文本与图片，不执行 HTML、脚本或 iframe。
+
+推荐模块与页面、存储、网络分离：画像处理有界事件和评分，候选模块调用 Repository，AppModel 负责按线路保存。协议与 UI 不依赖评分公式。详见[推荐设计](recommendations.md)。

@@ -38,6 +38,8 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - if: runner.os == 'Windows'
+        run: flutter drive --driver=test_driver/integration_test.dart --target=integration_test/native_bridge_test.dart --profile -d windows
+      - if: runner.os == 'Windows'
         run: flutter build windows --release
       - if: runner.os == 'Linux'
         run: flutter build linux --release
@@ -48,7 +50,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: flutter build web --release --no-web-resources-cdn
       - if: runner.os == 'Linux'
-        run: cargo build --manifest-path rust/Cargo.toml --release --features server --bin hghub-server --locked
+        run: cargo build --manifest-path rust/Cargo.toml --release --features server --bin hedone-server --locked
   android:
     runs-on: ubuntu-24.04
     steps:
@@ -64,3 +66,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.1
       - run: flutter pub get --enforce-lockfile
       - run: flutter build apk --debug --target-platform android-arm64
+      - run: flutter build apk --release --target-platform android-arm64

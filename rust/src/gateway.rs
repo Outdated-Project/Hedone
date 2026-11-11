@@ -12,7 +12,7 @@ use axum::{
 use futures_util::StreamExt;
 use rand::Rng;
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
@@ -101,9 +101,9 @@ async fn serve(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let mut permit = Some(permit);
-    let response = if kind == "stream" {
+    let response = if kind == "stream" || kind == "seg" {
         stream(&ctx, target, &headers, permit.take().unwrap()).await
-    } else if ["img", "hls", "seg"].contains(&kind) {
+    } else if ["img", "hls"].contains(&kind) {
         let query = format!(
             "u={}",
             percent_encoding::utf8_percent_encode(target, percent_encoding::NON_ALPHANUMERIC)
@@ -160,27 +160,21 @@ async fn stream(
         return Ok(StatusCode::RANGE_NOT_SATISFIABLE.into_response());
     }
     let referer = format!("{}/", crate::net::base());
-    let known_playlist =
-        url::Url::parse(url).is_ok_and(|url| url.path().to_ascii_lowercase().ends_with(".m3u8"));
-    let mut download = if known_playlist {
-        let upstream = crate::net::get(url, Duration::from_secs(20), None, Some(&referer)).await?;
-        crate::media_range::Download {
-            status: upstream.status(),
-            headers: upstream.headers().clone(),
-            url: upstream.url().clone(),
-            body: Box::pin(upstream.bytes_stream()),
-        }
-    } else {
-        let source = url::Url::parse(url).map_err(|_| "无效媒体 URL")?;
-        crate::media_range::open(&source, range, move |target, range, etag| {
-            let referer = referer.clone();
-            async move {
-                crate::net::get_media_range(target.as_str(), &referer, &range, etag.as_deref())
-                    .await
-            }
-        })
-        .await?
+    let upstream = crate::net::get_media_stream(url, &referer, range).await?;
+    let download = crate::media_range::Download {
+        status: upstream.status(),
+        headers: upstream.headers().clone(),
+        url: upstream.url().clone(),
+        body: Box::pin(upstream.bytes_stream()),
     };
+    relay(download, &ctx.origin, permit).await
+}
+
+async fn relay(
+    mut download: crate::media_range::Download,
+    origin: &str,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<Response, String> {
     let status = download.status;
     if !status.is_success() {
         let mut response = status.into_response();
@@ -198,10 +192,19 @@ async fn stream(
         .unwrap_or("application/octet-stream")
         .to_string();
     let final_url = download.url.to_string();
-    let is_hls = ctype.to_ascii_lowercase().contains("mpegurl")
+    let mut prefix = Vec::new();
+    while prefix.len() < 10 {
+        match download.body.next().await {
+            Some(chunk) => prefix.extend_from_slice(&chunk.map_err(|e| e.to_string())?),
+            None => break,
+        }
+    }
+    let is_hls = prefix.starts_with(b"#EXTM3U")
+        || prefix.starts_with(b"\xef\xbb\xbf#EXTM3U")
+        || ctype.to_ascii_lowercase().contains("mpegurl")
         || download.url.path().to_ascii_lowercase().ends_with(".m3u8");
     if is_hls {
-        let mut bytes = Vec::new();
+        let mut bytes = prefix;
         while let Some(chunk) = download.body.next().await {
             let chunk = chunk.map_err(|e| e.to_string())?;
             if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
@@ -215,7 +218,7 @@ async fn stream(
         }
         return Ok((
             [("content-type", "application/vnd.apple.mpegurl")],
-            crate::media::rewrite_playlist(&final_url, text, &ctx.origin),
+            crate::media::rewrite_playlist(&final_url, text, origin),
         )
             .into_response());
     }
@@ -234,18 +237,22 @@ async fn stream(
         }
     }
     builder
-        .body(Body::from_stream(download.body.map(move |chunk| {
-            let _keep_alive = &permit;
-            if let Err(error) = &chunk {
-                crate::playback_log::record(
-                    "gateway.body_failed",
-                    nextjson::json!({
-                        "error_kind": crate::playback_log::error_kind(&error.to_string())
-                    }),
-                );
-            }
-            chunk
-        })))
+        .body(Body::from_stream(
+            futures_util::stream::once(async move { Ok(axum::body::Bytes::from(prefix)) })
+                .chain(download.body)
+                .map(move |chunk| {
+                    let _keep_alive = &permit;
+                    if let Err(error) = &chunk {
+                        crate::playback_log::record(
+                            "gateway.body_failed",
+                            nextjson::json!({
+                                "error_kind": crate::playback_log::error_kind(&error.to_string())
+                            }),
+                        );
+                    }
+                    chunk
+                }),
+        ))
         .map_err(|_| "Unable to construct the media response".into())
 }
 
@@ -307,6 +314,104 @@ fn apply_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_download(
+        chunks: Vec<Vec<u8>>,
+        status: StatusCode,
+        headers: HeaderMap,
+    ) -> crate::media_range::Download {
+        crate::media_range::Download {
+            status,
+            headers,
+            url: url::Url::parse("https://cdn.example/unknown").unwrap(),
+            body: Box::pin(futures_util::stream::iter(
+                chunks.into_iter().map(|v| Ok(axum::body::Bytes::from(v))),
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn split_playlist_signature_is_rewritten_and_manifest_size_is_bounded() {
+        let permits = Arc::new(Semaphore::new(1));
+        let download = fixture_download(
+            vec![b"#EX".to_vec(), b"TM3U\nvideo.ts\n".to_vec()],
+            StatusCode::OK,
+            HeaderMap::new(),
+        );
+        let response = relay(
+            download,
+            "http://127.0.0.1/secret",
+            permits.clone().acquire_owned().await.unwrap(),
+        )
+        .await
+        .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("http://127.0.0.1/secret/seg.ts?u=")
+        );
+        assert_eq!(permits.available_permits(), 1);
+        let download = fixture_download(
+            vec![b"#EXTM3U\n123".to_vec(), vec![b'x'; 2 * 1024 * 1024]],
+            StatusCode::OK,
+            HeaderMap::new(),
+        );
+        assert!(
+            relay(
+                download,
+                "http://127.0.0.1/secret",
+                permits.clone().acquire_owned().await.unwrap()
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_range_preserves_bytes_and_cancellation_releases_gateway_slot() {
+        let permits = Arc::new(Semaphore::new(1));
+        let mut headers = HeaderMap::new();
+        headers.insert("content-range", "bytes 7-18/999".parse().unwrap());
+        headers.insert("content-length", "12".parse().unwrap());
+        let download = fixture_download(
+            vec![vec![9; 5], vec![8; 7]],
+            StatusCode::PARTIAL_CONTENT,
+            headers,
+        );
+        let response = relay(
+            download,
+            "unused",
+            permits.clone().acquire_owned().await.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 7-18/999");
+        assert_eq!(permits.available_permits(), 0);
+        let bytes = axum::body::to_bytes(response.into_body(), 100)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..5], &[9; 5]);
+        assert_eq!(&bytes[5..], &[8; 7]);
+        assert_eq!(permits.available_permits(), 1);
+        let download = fixture_download(
+            vec![vec![1; 32], vec![2; 32]],
+            StatusCode::OK,
+            HeaderMap::new(),
+        );
+        let response = relay(
+            download,
+            "unused",
+            permits.clone().acquire_owned().await.unwrap(),
+        )
+        .await
+        .unwrap();
+        drop(response);
+        assert_eq!(permits.available_permits(), 1);
+    }
     #[test]
     fn ranges_share_the_original_allocation() {
         let bytes = axum::body::Bytes::from(vec![1, 2, 3, 4, 5]);

@@ -1,37 +1,29 @@
-//! Bounded adapter using only public APIs from the published Courierust crate.
-//! HTTP/1 responses are buffered by the library; chunk() does not stream upstream.
-use crate::transport_connection::{Connections, remaining};
+//! Origin-scoped asynchronous HTTP with bounded admission and verified Rustls TLS.
+//! Redirect policy and DNS validation remain in net/network_policy.
 pub use axum::http::header;
 use axum::{
     body::Bytes,
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
 };
-use courierust::{
-    courierust_body::Body,
-    courierust_client::ClientConfig,
-    courierust_http::{Method, request::Request as HttpRequest},
-    courierust_tls::RootStore,
-};
-use std::{
-    io,
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{io, net::SocketAddr, time::Duration};
 use tokio::sync::{Semaphore, SemaphorePermit};
 pub type Error = io::Error;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_TIMEOUT: Duration = Duration::from_secs(20);
 static WORKERS: Semaphore = Semaphore::const_new(4);
+static MEDIA_WORKERS: Semaphore = Semaphore::const_new(2);
 fn error(e: impl std::fmt::Display) -> Error {
     io::Error::other(e.to_string())
+}
+fn request_error(e: reqwest::Error) -> Error {
+    // Omit request URLs (including media tokens) while retaining the TLS cause.
+    io::Error::other(e.without_url())
 }
 
 #[derive(Clone)]
 pub struct Client {
     origin: url::Origin,
-    connections: Arc<Connections>,
-    roots: Arc<RootStore>,
+    inner: reqwest::Client,
 }
 impl Client {
     pub fn create(
@@ -39,30 +31,39 @@ impl Client {
         addresses: &[SocketAddr],
         proxy: Option<String>,
     ) -> Result<Self, String> {
-        if proxy.is_some() {
-            return Err("当前 Courierust 地址固定模式不支持代理；不会绕过已配置的代理直连".into());
-        }
         if !matches!(target.scheme(), "http" | "https")
             || !target.username().is_empty()
             || target.password().is_some()
         {
             return Err("HTTP 目标无效".into());
         }
-        let connections = Connections::new(
-            addresses,
-            target.port_or_known_default().ok_or("目标端口无效")?,
-        )?;
-        let roots = courierust::courierust_tls::system_roots::load()
-            .or_else(|_| {
-                let mut roots = RootStore::new();
-                roots.add_pem(include_str!("../assets/cacert.pem"))?;
-                Ok::<_, courierust::courierust_tls::TlsError>(roots)
-            })
-            .map_err(|_| "无法读取 TLS 信任库")?;
+        let port = target.port_or_known_default().ok_or("目标端口无效")?;
+        if addresses.is_empty() || addresses.iter().any(|a| a.port() != port) {
+            return Err("缺少有效的已校验 DNS 地址".into());
+        }
+        let host = target.host_str().ok_or("目标缺少主机名")?;
+        let mut builder = reqwest::Client::builder()
+            .use_rustls_tls()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .referer(false)
+            .http1_only()
+            .resolve_to_addrs(host, addresses)
+            .user_agent(crate::net::UA)
+            .connect_timeout(Duration::from_secs(8))
+            .read_timeout(MAX_TIMEOUT)
+            .pool_idle_timeout(Duration::from_secs(15))
+            .pool_max_idle_per_host(2);
+        if let Some(proxy) = proxy {
+            // An explicitly configured system/application proxy is a trusted
+            // network intermediary: CONNECT may resolve at that proxy. Never
+            // fall back to direct access when the configured proxy fails.
+            builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| "代理配置无效")?);
+        }
         Ok(Self {
             origin: target.origin(),
-            connections: Arc::new(connections),
-            roots: Arc::new(roots),
+            inner: builder.build().map_err(|e| e.to_string())?,
         })
     }
     #[cfg(test)]
@@ -75,172 +76,118 @@ impl Client {
         .unwrap()
     }
     pub fn get(&self, url: impl ToString) -> Request {
-        self.request(url, Method::GET)
+        self.request(url, reqwest::Method::GET)
     }
     pub fn post(&self, url: impl ToString) -> Request {
-        self.request(url, Method::POST)
+        self.request(url, reqwest::Method::POST)
     }
-    fn request(&self, url: impl ToString, method: Method) -> Request {
+    fn request(&self, url: impl ToString, method: reqwest::Method) -> Request {
+        let url = url.to_string();
         Request {
-            client: self.clone(),
-            url: url.to_string(),
-            method,
-            headers: vec![],
-            body: String::new(),
+            origin: self.origin.clone(),
+            inner: self.inner.request(method, &url),
+            url,
             timeout: MAX_TIMEOUT,
         }
     }
 }
 pub struct Request {
-    client: Client,
+    origin: url::Origin,
+    inner: reqwest::RequestBuilder,
     url: String,
-    method: Method,
-    headers: Vec<(String, String)>,
-    body: String,
     timeout: Duration,
 }
 impl Request {
     pub fn header(mut self, name: impl ToString, value: impl ToString) -> Self {
-        self.headers.push((name.to_string(), value.to_string()));
+        self.inner = self.inner.header(name.to_string(), value.to_string());
         self
     }
     pub fn body(mut self, body: String) -> Self {
-        self.body = body;
+        self.inner = self.inner.body(body);
         self
     }
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.timeout = timeout.min(MAX_TIMEOUT);
         self
+    }
+    /// Header admission is bounded; body reads follow downstream demand. The
+    /// separate media budget prevents long streams from starving catalogue calls.
+    pub async fn send_streaming(self) -> Result<Response, Error> {
+        let url = url::Url::parse(&self.url).map_err(error)?;
+        if url.origin() != self.origin || !url.username().is_empty() || url.password().is_some() {
+            return Err(error("拒绝未固定地址的请求来源"));
+        }
+        tokio::time::timeout(self.timeout, async move {
+            let permit = MEDIA_WORKERS.acquire().await.map_err(error)?;
+            let upstream = self
+                .inner
+                .header("accept-encoding", "identity")
+                .send()
+                .await
+                .map_err(request_error)?;
+            if upstream
+                .headers()
+                .get("content-encoding")
+                .is_some_and(|v| v != "identity")
+            {
+                return Err(error("unsupported unsolicited content encoding"));
+            }
+            Ok(Response {
+                status: upstream.status(),
+                headers: upstream.headers().clone(),
+                url,
+                body: Bytes::new(),
+                upstream: Some(upstream),
+                permit: Some(permit),
+            })
+        })
+        .await
+        .map_err(|_| error("request timed out"))?
     }
     pub async fn send(self) -> Result<Response, Error> {
         let url = url::Url::parse(&self.url).map_err(error)?;
-        if url.origin() != self.client.origin
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
+        if url.origin() != self.origin || !url.username().is_empty() || url.password().is_some() {
             return Err(error("拒绝未固定地址的请求来源"));
         }
-        let timeout = self.timeout.min(MAX_TIMEOUT);
-        let deadline = Instant::now() + timeout;
-        tokio::time::timeout(timeout, async move {
+        tokio::time::timeout(self.timeout, async move {
             let permit = WORKERS.acquire().await.map_err(error)?;
-            tokio::task::spawn_blocking(move || {
-                let mut config = ClientConfig {
-                    max_redirects: 0,
-                    max_body: MAX_BODY,
-                    max_header_list: 65536,
-                    user_agent: Some(crate::net::UA.into()),
-                    accept_encoding: false,
-                    connect_timeout: Some(remaining(deadline)?),
-                    handshake_timeout: Some(remaining(deadline)?),
-                    read_timeout: Some(remaining(deadline)?),
-                    ..Default::default()
-                };
-                let hostname = match url.host().ok_or_else(|| error("missing hostname"))? {
-                    url::Host::Domain(name) => name.to_owned(),
-                    url::Host::Ipv4(ip) => ip.to_string(),
-                    url::Host::Ipv6(ip) => ip.to_string(),
-                };
-                let mut request = HttpRequest::<Body>::new(
-                    self.method,
-                    courierust::courierust_http::PathAndQuery::from_bytes(
-                        url[url::Position::BeforePath..url::Position::AfterQuery].as_bytes(),
-                    )
-                    .map_err(error)?,
-                );
-                for (name, value) in self.headers {
-                    request = request.header(
-                        courierust::courierust_http::HeaderName::from_bytes(name.as_bytes())
-                            .map_err(error)?,
-                        courierust::courierust_http::HeaderValue::from_bytes(value.as_bytes())
-                            .map_err(error)?,
-                    );
+            let mut response = self
+                .inner
+                .header("accept-encoding", "identity")
+                .timeout(self.timeout)
+                .send()
+                .await
+                .map_err(request_error)?;
+            if response
+                .content_length()
+                .is_some_and(|len| len > MAX_BODY as u64)
+            {
+                return Err(error("响应超过 8 MiB 上限"));
+            }
+            if response
+                .headers()
+                .get("content-encoding")
+                .is_some_and(|v| v != "identity")
+            {
+                return Err(error("unsupported unsolicited content encoding"));
+            }
+            let status = response.status();
+            let headers = response.headers().clone();
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(request_error)? {
+                if chunk.len() > MAX_BODY - body.len() {
+                    return Err(error("响应超过 8 MiB 上限"));
                 }
-                request = request.header("accept-encoding", "identity");
-                if !self.body.is_empty() {
-                    request = request.with_body(Body::from(self.body));
-                }
-                let roots = (url.scheme() == "https").then_some(self.client.roots.as_ref());
-                let pooled = self.client.connections.take();
-                let reused = pooled.is_some();
-                let mut connection = match pooled {
-                    Some(connection) => connection,
-                    None => self
-                        .client
-                        .connections
-                        .connect(&hostname, roots, &config, deadline)?,
-                };
-                config.read_timeout = Some(remaining(deadline)?);
-                connection
-                    .set_read_deadline(config.read_timeout)
-                    .map_err(error)?;
-                let mut result = connection.send(
-                    &request,
-                    &config,
-                    &url[url::Position::BeforeHost..url::Position::AfterPort],
-                    false,
-                );
-                // Retry only an idempotent GET on a reused socket that closed
-                // without any response bytes. Never replay a POST or a partial response.
-                if reused
-                    && request.method == Method::GET
-                    && result
-                        .as_ref()
-                        .is_err_and(|e| connection.is_stale_failure(e))
-                {
-                    drop(connection);
-                    connection = self
-                        .client
-                        .connections
-                        .connect(&hostname, roots, &config, deadline)?;
-                    config.read_timeout = Some(remaining(deadline)?);
-                    connection
-                        .set_read_deadline(config.read_timeout)
-                        .map_err(error)?;
-                    result = connection.send(
-                        &request,
-                        &config,
-                        &url[url::Position::BeforeHost..url::Position::AfterPort],
-                        false,
-                    );
-                }
-                let response = result.map_err(|e| {
-                    if e.to_string().contains("body exceeds limit") {
-                        error("当前 Courierust 响应超过 8 MiB 上限，不支持大文件流式传输")
-                    } else {
-                        error(e)
-                    }
-                })?;
-                let status = StatusCode::from_u16(response.status.as_u16()).map_err(error)?;
-                let mut headers = HeaderMap::new();
-                for (name, value) in response.headers.iter() {
-                    headers.append(
-                        HeaderName::from_bytes(name.as_str().as_bytes()).map_err(error)?,
-                        HeaderValue::from_bytes(value.as_bytes()).map_err(error)?,
-                    );
-                }
-                if headers
-                    .get("content-encoding")
-                    .is_some_and(|v| v != "identity")
-                {
-                    return Err(error("unsupported unsolicited content encoding"));
-                }
-                let body = match response.body {
-                    Body::Empty => Bytes::new(),
-                    Body::Bytes(bytes) => Bytes::from(bytes.into_vec()),
-                    _ => return Err(error("unexpected streaming body from buffered HTTP/1 API")),
-                };
-                self.client.connections.recycle(connection);
-                Ok(Response {
-                    status,
-                    headers,
-                    url,
-                    body,
-                    permit: Some(permit),
-                })
+                body.extend_from_slice(&chunk);
+            }
+            Ok(Response {
+                status,
+                headers,
+                url,
+                body: Bytes::from(body),
+                upstream: None,
+                permit: Some(permit),
             })
-            .await
-            .map_err(error)?
         })
         .await
         .map_err(|_| error("request timed out"))?
@@ -252,8 +199,7 @@ pub struct Response {
     headers: HeaderMap,
     url: url::Url,
     body: Bytes,
-    // Keep admission until the buffered response is consumed or dropped.
-    // Cancellation never frees a still-running blocking worker's permit.
+    upstream: Option<reqwest::Response>,
     permit: Option<SemaphorePermit<'static>>,
 }
 impl Response {
@@ -274,13 +220,23 @@ impl Response {
             .parse()
             .ok()
     }
-    pub(crate) fn buffered_len(&self) -> usize {
-        self.body.len()
-    }
     pub async fn chunk(&mut self) -> Result<Option<Bytes>, Error> {
-        if self.body.is_empty() {
-            self.permit.take();
-            return Ok(None);
+        while self.body.is_empty() {
+            let Some(upstream) = &mut self.upstream else {
+                self.permit.take();
+                return Ok(None);
+            };
+            match upstream.chunk().await {
+                Ok(Some(bytes)) => self.body = bytes,
+                Ok(None) => {
+                    self.upstream.take();
+                }
+                Err(e) => {
+                    self.upstream.take();
+                    self.permit.take();
+                    return Err(request_error(e));
+                }
+            }
         }
         Ok(Some(self.body.split_to(self.body.len().min(32768))))
     }
@@ -294,55 +250,98 @@ impl Response {
         })
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    use std::sync::Arc;
     #[test]
-    fn official_certificate_path_limitation_and_invalid_certificates() {
-        use courierust::courierust_tls::x509::validate_chain;
-        let mut roots = courierust::courierust_tls::RootStore::new();
-        roots.add_pem(include_str!("../assets/cacert.pem")).unwrap();
-        let chain = vec![
+    fn cross_signed_chain_uses_valid_anchor_and_rejects_invalid_certificates() {
+        use rustls::{
+            client::danger::ServerCertVerifier,
+            pki_types::{CertificateDer, ServerName, UnixTime},
+        };
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .unwrap();
+        let leaf = CertificateDer::from(
             include_bytes!("../tests/fixtures/cross_signed/leaf.der").to_vec(),
-            include_bytes!("../tests/fixtures/cross_signed/intermediate.der").to_vec(),
-            include_bytes!("../tests/fixtures/cross_signed/cross-signed-root.der").to_vec(),
-        ];
-        // Fixed capture time keeps the regression independent of leaf renewal.
-        let now = 1_794_355_200;
-        // Official 1.1.2 cannot terminate this cross-signed chain at the earlier anchor.
-        assert!(validate_chain(&roots, &chain, now).is_err());
-        validate_chain(&roots, &chain[..2], now).unwrap();
-        assert!(
-            validate_chain(&courierust::courierust_tls::RootStore::new(), &chain, now).is_err()
         );
-        assert!(validate_chain(&roots, &chain[..2], now + 365 * 86400).is_err());
-        let mut tampered = chain[..2].to_vec();
-        *tampered[0].last_mut().unwrap() ^= 1;
-        assert!(validate_chain(&roots, &tampered, now).is_err());
-    }
-    #[tokio::test]
-    #[ignore = "direct HTTPS probe, independent of OS proxy, using mobile fallback roots"]
-    async fn live_bundled_roots_validate_primary_origin() {
-        let target = url::Url::parse(crate::net::DEFAULT_BASE).unwrap();
-        let addresses = crate::dns::lookup(target.host_str().unwrap(), 443)
-            .await
+        let intermediates = [
+            CertificateDer::from(
+                include_bytes!("../tests/fixtures/cross_signed/intermediate.der").to_vec(),
+            ),
+            CertificateDer::from(
+                include_bytes!("../tests/fixtures/cross_signed/cross-signed-root.der").to_vec(),
+            ),
+        ];
+        let name = ServerName::try_from("huangguoai.ai").unwrap();
+        let now = UnixTime::since_unix_epoch(Duration::from_secs(1_794_355_200));
+        verifier
+            .verify_server_cert(&leaf, &intermediates, &name, &[], now)
             .unwrap();
-        // This probes the direct adapter, not proxy selection or application routing.
-        let mut client = Client::create(&target, &addresses, None).unwrap();
-        let mut roots = RootStore::new();
-        roots.add_pem(include_str!("../assets/cacert.pem")).unwrap();
-        client.roots = Arc::new(roots);
-        for _ in 0..3 {
-            let response = client.get(&target).send().await.unwrap();
-            assert!(response.status().is_success());
-        }
+        let wrong = ServerName::try_from("wrong.example").unwrap();
+        assert!(
+            verifier
+                .verify_server_cert(&leaf, &intermediates, &wrong, &[], now)
+                .is_err()
+        );
+        let expired = UnixTime::since_unix_epoch(Duration::from_secs(1_794_355_200 + 365 * 86400));
+        assert!(
+            verifier
+                .verify_server_cert(&leaf, &intermediates, &name, &[], expired)
+                .is_err()
+        );
+        let mut damaged = leaf.to_vec();
+        *damaged.last_mut().unwrap() ^= 1;
+        assert!(
+            verifier
+                .verify_server_cert(
+                    &CertificateDer::from(damaged),
+                    &intermediates,
+                    &name,
+                    &[],
+                    now
+                )
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify_server_cert(&leaf, &[], &name, &[], now)
+                .is_err()
+        );
     }
     #[tokio::test]
-    #[ignore = "live upstream playback API; set HGHUB_TEST_VIDEO_ID"]
+    #[ignore = "live direct HTTPS requests with normal certificate verification"]
+    async fn live_bundled_roots_validate_primary_origin() {
+        let mut failures = Vec::new();
+        for origin in [
+            crate::net::DEFAULT_BASE,
+            "https://huangguoai.ai",
+            "https://huangguoai.pages.dev",
+        ] {
+            let target = url::Url::parse(origin).unwrap();
+            let addresses = crate::dns::lookup(target.host_str().unwrap(), 443)
+                .await
+                .unwrap();
+            let client = Client::create(&target, &addresses, None).unwrap();
+            match client.get(&target).send().await {
+                Ok(response) => println!("{origin}: HTTP {} (verified TLS)", response.status()),
+                Err(error) => failures.push(format!("{origin}: {error}")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+    #[tokio::test]
+    #[ignore = "live upstream playback API; set HEDONE_TEST_VIDEO_ID"]
     async fn live_manifest_can_reopen_same_origin() {
-        let id = std::env::var("HGHUB_TEST_VIDEO_ID")
+        let id = std::env::var("HEDONE_TEST_VIDEO_ID")
             .unwrap()
             .parse()
             .unwrap();
@@ -350,11 +349,10 @@ mod tests {
         let play = crate::api::api_play(&api, id, 1).await.unwrap();
         let url = play["video_url"].as_str().unwrap();
         for _ in 0..3 {
-            let response = crate::net::get_media_range(
+            let response = crate::net::get_media_stream(
                 url,
                 &format!("{}/", crate::net::base()),
-                "bytes=0-",
-                None,
+                Some("bytes=0-"),
             )
             .await
             .unwrap();
@@ -363,6 +361,75 @@ mod tests {
                 .unwrap();
             assert!(bytes.starts_with(b"#EXTM3U"));
         }
+    }
+    #[tokio::test]
+    async fn media_headers_arrive_before_body_and_large_payload_stays_chunked() {
+        const LENGTH: usize = 24 * 1024 * 1024 + 7;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready, proceed) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert!(head(&mut socket).to_lowercase().contains("range: bytes=0-"));
+            // No ETag: one response does not need version-checked stitching.
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {LENGTH}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            proceed.recv_timeout(Duration::from_secs(5)).unwrap();
+            let block = [0x5au8; 16384];
+            let mut remaining = LENGTH;
+            while remaining > 0 {
+                let size = remaining.min(block.len());
+                socket.write_all(&block[..size]).unwrap();
+                remaining -= size;
+            }
+        });
+        let target = url::Url::parse(&format!("http://{address}/large.ts")).unwrap();
+        let client = Client::create(&target, &[address], None).unwrap();
+        let mut response = client
+            .get(&target)
+            .header("Range", "bytes=0-")
+            .send_streaming()
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), Some(LENGTH as u64));
+        assert!(response.body.is_empty());
+        ready.send(()).unwrap();
+        let mut delivered = 0;
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            assert!(chunk.len() <= 32768);
+            assert!(chunk.iter().all(|b| *b == 0x5a));
+            delivered += chunk.len();
+        }
+        assert_eq!(delivered, LENGTH);
+        assert!(response.permit.is_none());
+        server.join().unwrap();
+    }
+    #[tokio::test]
+    async fn cancelled_media_releases_admission_and_truncation_reports_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                head(&mut socket);
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nabc",
+                    )
+                    .unwrap();
+            }
+        });
+        let target = url::Url::parse(&format!("http://{address}/clip")).unwrap();
+        let client = Client::create(&target, &[address], None).unwrap();
+        for _ in 0..2 {
+            drop(client.get(&target).send_streaming().await.unwrap());
+        }
+        let response = client.get(&target).send_streaming().await.unwrap();
+        assert!(crate::net::read_limited(response, 100).await.is_err());
+        server.join().unwrap();
     }
     fn head(socket: &mut std::net::TcpStream) -> String {
         socket
@@ -512,7 +579,7 @@ mod tests {
         assert!(client.get("http://other.invalid").send().await.is_err());
     }
     #[test]
-    fn missing_addresses_and_configured_proxies_are_rejected() {
+    fn missing_addresses_are_rejected_and_configured_proxies_are_supported() {
         let target = url::Url::parse("https://example.com").unwrap();
         assert!(Client::create(&target, &[], None).is_err());
         for proxy in [
@@ -525,7 +592,7 @@ mod tests {
                 &["192.0.2.8:443".parse().unwrap()],
                 Some(proxy.into()),
             );
-            assert!(result.err().unwrap().contains("不支持代理"));
+            assert!(result.is_ok());
         }
     }
     #[tokio::test]

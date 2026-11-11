@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/core/paged_controller.dart';
-import 'package:hghub/data/models.dart';
+import 'package:hedone/core/paged_controller.dart';
+import 'package:hedone/data/models.dart';
 
 void main() {
   test(

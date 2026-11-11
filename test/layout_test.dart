@@ -1,10 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/core/preferences.dart';
-import 'package:hghub/core/app_model.dart';
-import 'package:hghub/data/repository.dart';
-import 'package:hghub/data/transport.dart';
-import 'package:hghub/features/browse.dart';
-import 'package:hghub/ui/design.dart';
+import 'package:hedone/core/preferences.dart';
+import 'package:hedone/core/app_model.dart';
+import 'package:hedone/data/repository.dart';
+import 'package:hedone/data/transport.dart';
+import 'package:hedone/features/browse.dart';
+import 'package:hedone/ui/design.dart';
 
 class MemoryPreferences implements Preferences {
   final Map<String, Object> values = {};
@@ -57,7 +57,7 @@ class FixtureTransport implements Transport {
 }
 
 void main() {
-  for (final width in [320.0, 390.0, 800.0, 1440.0]) {
+  for (final width in [320.0, 390.0, 800.0, 1440.0, 1920.0, 3840.0]) {
     testWidgets('browse layout at $width logical pixels', (tester) async {
       tester.view.physicalSize = Size(width, 950);
       tester.view.devicePixelRatio = 1;

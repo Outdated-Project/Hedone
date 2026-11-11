@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 
 import '../core/app_model.dart';
 import '../core/paged_controller.dart';
+import '../core/recommendations.dart';
+import '../ui/haptics.dart';
 import '../data/models.dart';
 import '../ui/design.dart';
 import '../ui/feedback.dart';
@@ -21,10 +25,16 @@ class BrowseScreen extends StatefulWidget {
 
 class _BrowseScreenState extends State<BrowseScreen> {
   late final PagedController<VideoItem> _controller;
-  final _scroll = ScrollController(), _query = TextEditingController();
+  late final RecommendationFeed _recommendations;
+  final _scroll = ScrollController(keepScrollOffset: false),
+      _query = TextEditingController();
+  PageStorageBucket? _storage;
+  bool _restored = false;
+  late final String _storageKey;
   String _filter = 'feed', _submitted = '';
   static const filters = <String, String>{
     'feed': '为你发现',
+    'personal': '猜你喜欢',
     'ai-duanju': '短剧',
     'ai-manju': '漫剧',
     'ai-huanlian': '换脸',
@@ -36,6 +46,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
   @override
   void initState() {
     super.initState();
+    _storageKey = 'browse.${widget.model.identityRevision}.${widget.search}';
+    _recommendations = RecommendationFeed(
+      widget.model.repository,
+      widget.model.recommendations,
+    );
     _controller = PagedController((page) {
       if (widget.search) {
         return widget.model.repository.videos(
@@ -47,6 +62,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       if (_filter == 'feed') {
         return widget.model.repository.videos('feed', page);
       }
+      if (_filter == 'personal') return _recommendations.load(page);
       if (_filter.startsWith('ai-')) {
         return widget.model.repository.videos(
           'category',
@@ -63,23 +79,50 @@ class _BrowseScreenState extends State<BrowseScreen> {
     _scroll.addListener(() {
       if (_scroll.position.extentAfter < 600) _controller.next();
     });
-    if (!widget.search) _controller.next();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_restored) return;
+    _restored = true;
+    _storage = PageStorage.maybeOf(context);
+    final saved = _storage?.readState(context, identifier: _storageKey);
+    if (saved is (String, String, String)) {
+      _filter = filters.containsKey(saved.$1) ? saved.$1 : 'feed';
+      _submitted = saved.$2;
+      _query.text = saved.$3;
+    }
+    if (!widget.search || _submitted.isNotEmpty) _controller.next();
   }
 
   @override
   void dispose() {
+    // Explicit identifier avoids ancestor lookups during disposal. Keep only
+    // small user input state; evicted pages release images and result lists.
+    _storage?.writeState(context, (
+      _filter,
+      _submitted,
+      _query.text,
+    ), identifier: _storageKey);
     _controller.dispose();
     _scroll.dispose();
     _query.dispose();
     super.dispose();
   }
 
-  void _search() {
+  Future<void> _search() async {
     final text = _query.text.trim();
     if (text.isEmpty) return;
     FocusScope.of(context).unfocus();
     setState(() => _submitted = text);
-    _controller.refresh();
+    unawaited(_controller.refresh());
+    AppHaptics.selection(context);
+    try {
+      await widget.model.rememberSearch(text);
+    } catch (_) {
+      if (mounted) M3ESnackbar.show(context, message: '搜索偏好未能保存，请检查本机存储空间');
+    }
   }
 
   @override
@@ -87,7 +130,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
     children: [
       PageHeading(
         widget.search ? '找到心动的故事' : '发现好故事',
-        subtitle: widget.search ? '搜索标题、标签与关键词' : '黄果 · 随时开启下一段精彩',
+        subtitle: widget.search
+            ? '搜索标题、标签与关键词'
+            : _filter == 'personal'
+            ? '从偶然心动，到越来越懂你'
+            : 'Hedone · 随时开启下一段精彩',
         actions: [
           M3EIconButton(
             icon: const Icon(Icons.refresh_rounded),
@@ -127,6 +174,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                           selected: _filter == e.key,
                           onPressed: () {
                             if (_filter == e.key) return;
+                            AppHaptics.selection(context);
                             setState(() => _filter = e.key);
                             _controller.refresh();
                             if (_scroll.hasClients) _scroll.jumpTo(0);
@@ -264,7 +312,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
   );
 }
 
-class VideoTile extends StatelessWidget {
+class VideoTile extends StatefulWidget {
   const VideoTile({
     required this.model,
     required this.item,
@@ -274,9 +322,31 @@ class VideoTile extends StatelessWidget {
   final AppModel model;
   final VideoItem item;
   final String? progress;
+  @override
+  State<VideoTile> createState() => _VideoTileState();
+}
+
+class _VideoTileState extends State<VideoTile> {
+  final _artwork = Object();
+  bool _opening = false;
+  Future<void> _open() async {
+    if (_opening) return;
+    _opening = true;
+    AppHaptics.selection(context);
+    try {
+      await AuroraMotion.open(context, _destination(context));
+    } finally {
+      _opening = false;
+    }
+  }
+
+  AppModel get model => widget.model;
+  VideoItem get item => widget.item;
+  String? get progress => widget.progress;
   Widget _destination(BuildContext context) => DetailScreen(
     model: model,
     item: item,
+    heroTag: _artwork,
     autoplay: true,
     immersive: MediaQuery.sizeOf(context).width < 600,
   );
@@ -285,19 +355,57 @@ class VideoTile extends StatelessWidget {
     variant: M3ECardVariant.filled,
     padding: EdgeInsets.zero,
     semanticLabel: '打开 ${item.title}',
-    openBuilder: MediaQuery.disableAnimationsOf(context)
-        ? null
-        : (_) => _destination(context),
-    onPressed: MediaQuery.disableAnimationsOf(context)
-        ? () => AuroraMotion.open(context, _destination(context))
-        : null,
+    onPressed: _open,
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: ClipRRect(
             borderRadius: BorderRadius.circular(20),
-            child: Poster(repository: model.repository, url: item.cover),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                PosterHero(
+                  tag: _artwork,
+                  repository: model.repository,
+                  url: item.cover,
+                ),
+                if (item.score > 0)
+                  Positioned(
+                    top: 10,
+                    right: 10,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 5,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.star_rounded,
+                              size: 14,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              item.score.toStringAsFixed(1),
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
         Padding(

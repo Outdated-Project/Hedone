@@ -1,7 +1,7 @@
-name: hghub
-description: 黄果客户端 · Flutter 与 Rust · 仅限非商业用途
+name: hedone
+description: Huangguo Client · Flutter & Rust · For non-commercial use only
 publish_to: none
-version: 2.0.0+20000
+version: 1.0.1+1
 environment:
   sdk: ^3.13.0
   flutter: '>=3.47.0'
@@ -23,6 +23,8 @@ dependencies:
   html: ^0.15.6
   http: ^1.6.0
   flutter_rust_bridge_hooks: 2.13.0
+  flutter_markdown_plus: ^1.0.12
+  markdown: ^7.3.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -35,12 +37,16 @@ flutter:
     - LICENSE
     - assets/brand.png
     - assets/licenses/
-    - assets/fonts/robotoflex-OFL.txt
     - assets/fonts/notosanssc-OFL.txt
+    - assets/fonts/googlesans-OFL.txt
+    - assets/fonts/googlesanscode-OFL.txt
   fonts:
-    - family: Roboto Flex
+    - family: Google Sans
       fonts:
-        - asset: assets/fonts/robotoflex.ttf
+        - asset: assets/fonts/googlesans.ttf
+    - family: Google Sans Code
+      fonts:
+        - asset: assets/fonts/googlesanscode.ttf
     - family: Noto Sans SC
       fonts:
         - asset: assets/fonts/notosanssc.ttf

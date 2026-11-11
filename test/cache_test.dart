@@ -1,12 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/core/async_lru.dart';
-import 'package:hghub/core/paged_controller.dart';
-import 'package:hghub/data/models.dart';
-import 'package:hghub/ui/poster.dart';
-import 'package:hghub/core/playback_session.dart';
-import 'package:hghub/data/repository.dart';
+import 'package:hedone/core/async_lru.dart';
+import 'package:hedone/core/paged_controller.dart';
+import 'package:hedone/data/models.dart';
+import 'package:hedone/ui/poster.dart';
+import 'package:hedone/core/playback_session.dart';
+import 'package:hedone/data/repository.dart';
 
 import 'layout_test.dart' show FixtureTransport;
 

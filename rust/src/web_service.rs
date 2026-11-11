@@ -47,14 +47,14 @@ fn random_token() -> String {
 
 pub async fn run() -> Result<(), String> {
     let secret =
-        std::env::var("HGHUB_WEB_TOKEN").map_err(|_| "请设置至少 32 字节的 HGHUB_WEB_TOKEN")?;
+        std::env::var("HEDONE_WEB_TOKEN").map_err(|_| "请设置至少 32 字节的 HEDONE_WEB_TOKEN")?;
     if secret.len() < 32 {
-        return Err("HGHUB_WEB_TOKEN 至少需要 32 字节".into());
+        return Err("HEDONE_WEB_TOKEN 至少需要 32 字节".into());
     }
-    let bind = std::env::var("HGHUB_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let bind = std::env::var("HEDONE_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let origin =
-        std::env::var("HGHUB_PUBLIC_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
-    let url = url::Url::parse(&origin).map_err(|_| "HGHUB_PUBLIC_ORIGIN 无效")?;
+        std::env::var("HEDONE_PUBLIC_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let url = url::Url::parse(&origin).map_err(|_| "HEDONE_PUBLIC_ORIGIN 无效")?;
     if url.path() != "/"
         || url.query().is_some()
         || url.fragment().is_some()
@@ -62,7 +62,7 @@ pub async fn run() -> Result<(), String> {
         || url.password().is_some()
         || !matches!(url.scheme(), "http" | "https")
     {
-        return Err("HGHUB_PUBLIC_ORIGIN 必须是完整、无路径的 HTTP(S) origin".into());
+        return Err("HEDONE_PUBLIC_ORIGIN 必须是完整、无路径的 HTTP(S) origin".into());
     }
     if url.scheme() != "https"
         && !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
@@ -70,7 +70,7 @@ pub async fn run() -> Result<(), String> {
         return Err("远程部署必须使用 HTTPS origin".into());
     }
     let dir =
-        PathBuf::from(std::env::var("HGHUB_DATA_DIR").unwrap_or_else(|_| ".hghub-data".into()));
+        PathBuf::from(std::env::var("HEDONE_DATA_DIR").unwrap_or_else(|_| ".hedone-data".into()));
     std::fs::create_dir_all(&dir).map_err(|_| "无法创建服务数据目录")?;
     crate::net::bind_base(&dir);
     crate::dns::initialize(&dir).await?;
@@ -85,7 +85,7 @@ pub async fn run() -> Result<(), String> {
         clients: Mutex::new(HashMap::new()),
         permits: Semaphore::new(24),
     });
-    let web = PathBuf::from(std::env::var("HGHUB_WEB_DIR").unwrap_or_else(|_| "build/web".into()));
+    let web = PathBuf::from(std::env::var("HEDONE_WEB_DIR").unwrap_or_else(|_| "build/web".into()));
     if !web.join("index.html").is_file() {
         return Err("缺少 Flutter Web 产物，请先运行 flutter build web".into());
     }
@@ -105,7 +105,7 @@ pub async fn run() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| format!("Unable to listen on {bind}: {e}"))?;
-    eprintln!("HGhub Web listening on {bind}; configured origin {origin}");
+    eprintln!("Hedone Web listening on {bind}; configured origin {origin}");
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 

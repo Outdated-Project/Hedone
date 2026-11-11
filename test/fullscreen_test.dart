@@ -1,11 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/core/fullscreen_session.dart';
-import 'package:hghub/ui/cinema_layout.dart';
-import 'package:hghub/ui/design.dart';
-import 'package:hghub/ui/episode_pager.dart';
-import 'package:hghub/data/models.dart';
+import 'package:hedone/core/fullscreen_session.dart';
+import 'package:hedone/ui/cinema_layout.dart';
+import 'package:hedone/ui/design.dart';
+import 'package:hedone/ui/episode_pager.dart';
+import 'package:hedone/data/models.dart';
 
 class SurfaceProbe extends StatefulWidget {
   const SurfaceProbe({super.key});

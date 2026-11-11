@@ -1,4 +1,4 @@
-# HGhub
+# Hedone
 
 Flutter + Rust 黄果客户端。Android、iOS、Windows、macOS、Linux 共用 Flutter 界面与 Rust 核心；浏览器使用同源部署的 Rust 服务。
 
@@ -7,15 +7,17 @@ Flutter + Rust 黄果客户端。Android、iOS、Windows、macOS、Linux 共用 
 ## 实现
 
 - 原生端通过 `flutter_rust_bridge 2.13.0` 调用 Rust，Native Assets 负责构建与打包，不需要手工复制动态库。
-- 界面采用 Material 3 Expressive、Roboto Flex 与 Noto Sans SC。窄屏底部导航，宽屏导航栏；卡片容器转场、统一页面动效、系统减少动态效果和后台动画停用贯穿应用。
+- 界面采用 Material 3 Expressive、Google Sans、Google Sans Code 与 Noto Sans SC。窄屏底部导航，宽屏导航栏；卡片容器转场、统一页面动效、系统减少动态效果和后台动画停用贯穿应用。
 - 列表、分类、榜单、搜索、详情、剧集、帖子、评论和账号操作接入真实 edge 协议。播放器支持 HLS、拖动、倍速、续播和切集；没有演示数据或伪造接口成功状态。
 - 发现页提供沉浸观看入口，同一部剧内上下滑动切集。页面停稳才切换媒体，复用一个播放器；选集按需构建，临近片尾只预取下一集地址。
 - 会话、网络策略、封面解密、HLS 重写和有界媒体缓存集中在 Rust。原生凭据写入系统安全存储；Web 凭据只保留在服务进程中。
-- DNS 使用 RecurseX 0.2.5：系统解析失败或超时后，以 Courierust 1.1.2 验证加密上游；NextJson 0.1.5 读取配置，RustBinary 0.1.10 支撑 RecurseX 的有界缓存快照。解析版本记录在 Cargo.lock 中。
+- DNS 使用 RecurseX 0.2.6：系统解析失败或超时后，以 Courierust 1.1.2 验证加密上游；NextJson 0.1.5 读取配置，RustBinary 0.1.10 支撑 RecurseX 的有界缓存快照。解析版本记录在 Cargo.lock 中。
 
 `material_3_expressive` 是第三方组件实现，不冒称 Flutter 官方组件。Aurora 是应用的统一动效架构，使用 Flutter 自身的调度与渲染能力；仓库没有自研或修改 Flutter 渲染引擎。
 
-业务 JSON 使用 NextJson，UTC 时间格式化使用 tzcraft；出站 HTTP 仅使用正式发布的 Courierust 1.1.2，DNS 使用 RecurseX 0.2.5，无 vendor 或源码补丁。直连保留地址固定、多地址回退和有界连接复用；支持 Range 与强 ETag 的直接视频按 1 MiB 连续读取。普通响应仍限 8 MiB，应用代理及部分交叉签名证书链仍受官方接口限制。依赖职责、代理限制和全屏实现见[依赖边界](docs/dependencies.md)。
+业务 JSON 使用 NextJson，UTC 格式化使用 tzcraft。内容传输使用正式发布的 Reqwest / Rustls，保留地址校验、来源隔离和有界连接复用；代理按配置使用。DNS 使用 RecurseX。镜像从发布页自动发现，缓存最多保留七天；凭据只发往固定可信来源。依赖职责和实际限制见[依赖边界](docs/dependencies.md)。
+
+“猜你喜欢”从随机探索开始，根据近期观看和搜索逐渐调整，保留探索位置与多样性。画像在本机按线路隔离，设置中可重置；候选召回会向当前线路发送单个近期关键词。权重与预算见[推荐设计](docs/recommendations.md)。
 
 ## 开发
 

@@ -10,17 +10,18 @@ import '../src/rust/frb_generated.dart';
 Future<void> initializeNativeRuntime() {
   final executableDirectory = File(Platform.resolvedExecutable).parent.uri;
   final path = switch (Platform.operatingSystem) {
-    'windows' => executableDirectory.resolve('hghub_core.dll').toFilePath(),
-    'linux' => executableDirectory.resolve('lib/libhghub_core.so').toFilePath(),
+    'windows' => executableDirectory.resolve('hedone_core.dll').toFilePath(),
+    'linux' =>
+      executableDirectory.resolve('lib/libhedone_core.so').toFilePath(),
     'macos' =>
       executableDirectory
-          .resolve('../Frameworks/hghub_core.framework/hghub_core')
+          .resolve('../Frameworks/hedone_core.framework/hedone_core')
           .toFilePath(),
     'ios' =>
       executableDirectory
-          .resolve('Frameworks/hghub_core.framework/hghub_core')
+          .resolve('Frameworks/hedone_core.framework/hedone_core')
           .toFilePath(),
-    'android' => 'libhghub_core.so',
+    'android' => 'libhedone_core.so',
     _ => throw UnsupportedError('Unsupported native platform'),
   };
   return RustLib.init(externalLibrary: ExternalLibrary.open(path));

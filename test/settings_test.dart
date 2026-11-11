@@ -5,15 +5,15 @@ import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hghub/core/app_model.dart';
-import 'package:hghub/data/repository.dart';
-import 'package:hghub/data/transport.dart';
-import 'package:hghub/features/settings.dart';
-import 'package:hghub/features/lines.dart';
-import 'package:hghub/features/network_diagnostics.dart';
-import 'package:hghub/ui/action_list_item.dart';
-import 'package:hghub/ui/app_theme.dart';
-import 'package:hghub/ui/design.dart';
+import 'package:hedone/core/app_model.dart';
+import 'package:hedone/data/repository.dart';
+import 'package:hedone/data/transport.dart';
+import 'package:hedone/features/settings.dart';
+import 'package:hedone/features/lines.dart';
+import 'package:hedone/features/network_diagnostics.dart';
+import 'package:hedone/ui/action_list_item.dart';
+import 'package:hedone/ui/app_theme.dart';
+import 'package:hedone/ui/design.dart';
 
 import 'layout_test.dart' show FixtureTransport, MemoryPreferences;
 
@@ -47,6 +47,11 @@ class SettingsTransport extends FixtureTransport {
         ],
       },
       'line_set' => {'base': payload['url']},
+      'line_mirrors' => {
+        'items': [
+          {'host': 'mirror.example', 'url': 'https://mirror.example'},
+        ],
+      },
       'line_probe' => probe.future,
       'cache_clear' => cache.future,
       'log_status' => {'enabled': false},
@@ -120,7 +125,7 @@ void main() {
   setUpAll(() async {
     for (final entry in {
       'MaterialIcons': 'fonts/MaterialIcons-Regular.otf',
-      'Roboto Flex': 'assets/fonts/robotoflex.ttf',
+      'Google Sans': 'assets/fonts/googlesans.ttf',
       'Noto Sans SC': 'assets/fonts/notosanssc.ttf',
     }.entries) {
       await (FontLoader(

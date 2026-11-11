@@ -25,6 +25,7 @@ class DetailScreen extends StatefulWidget {
   const DetailScreen({
     required this.model,
     required this.item,
+    this.heroTag,
     this.autoplay = false,
     this.immersive = false,
     super.key,
@@ -32,6 +33,7 @@ class DetailScreen extends StatefulWidget {
   final AppModel model;
   final VideoItem item;
   final bool autoplay, immersive;
+  final Object? heroTag;
   @override
   State<DetailScreen> createState() => _DetailScreenState();
 }
@@ -47,9 +49,53 @@ class _DetailScreenState extends State<DetailScreen> {
       _following = false,
       _fullscreen = false;
   Timer? _historyTimer;
+  Animation<double>? _entrance;
+  bool _autoplayScheduled = false;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final animation = ModalRoute.of(context)?.animation;
+    if (_entrance != animation) {
+      _entrance?.removeStatusListener(_routeStatus);
+      _entrance = animation;
+      _entrance?.addStatusListener(_routeStatus);
+    }
+    _scheduleAutoplay();
+  }
+
+  void _routeStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) _scheduleAutoplay();
+  }
+
+  void _scheduleAutoplay() {
+    if (!widget.autoplay ||
+        _started ||
+        _autoplayScheduled ||
+        _loaded == null ||
+        (_entrance != null && _entrance!.status != AnimationStatus.completed)) {
+      return;
+    }
+    _autoplayScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoplayScheduled = false;
+      if (!mounted ||
+          _started ||
+          ModalRoute.of(context)?.isCurrent == false ||
+          (_entrance != null &&
+              _entrance!.status != AnimationStatus.completed)) {
+        return;
+      }
+      if (_fullscreen && !kIsWeb) unawaited(_setFullscreen(true));
+      unawaited(
+        _play(_loaded!.episodes.firstOrNull?.number ?? 1, resume: true),
+      );
+    });
+  }
+
   int _episode = 1;
   int? _preparedFor;
   final _videoKey = GlobalKey();
+  final _artworkKey = GlobalKey();
   final _presentation = FullscreenSession();
   Future<void> _setFullscreen(bool value) async {
     await perform(context, () async {
@@ -68,11 +114,6 @@ class _DetailScreenState extends State<DetailScreen> {
     _identity = widget.model.identityRevision;
     widget.model.addListener(_identityChanged);
     _fullscreen = widget.immersive;
-    if (_fullscreen && !kIsWeb) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_setFullscreen(true));
-      });
-    }
     _detail = _fetch();
     _session = PlaybackSession(widget.model.repository)..onCompleted = _next;
     _session.position.addListener(_prepareFollowing);
@@ -86,15 +127,7 @@ class _DetailScreenState extends State<DetailScreen> {
       _liked = detail.liked;
       _remoteCollected = detail.collected;
       _following = detail.author['is_following'] == true;
-      if (widget.autoplay && !_started) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !_started) {
-            unawaited(
-              _play(detail.episodes.firstOrNull?.number ?? 1, resume: true),
-            );
-          }
-        });
-      }
+      _scheduleAutoplay();
     }
     return detail;
   }
@@ -186,6 +219,7 @@ class _DetailScreenState extends State<DetailScreen> {
   void dispose() {
     widget.model.removeListener(_identityChanged);
     _historyTimer?.cancel();
+    _entrance?.removeStatusListener(_routeStatus);
     _session.position.removeListener(_prepareFollowing);
     _keyboard.dispose();
     unawaited(_presentation.close());
@@ -238,41 +272,51 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  Widget _artwork(Widget child) => PosterHero(
+    key: _artworkKey,
+    tag: widget.heroTag,
+    repository: widget.model.repository,
+    url: widget.item.cover,
+    child: child,
+  );
+
   Widget _surface() => AspectRatio(
     aspectRatio: 16 / 9,
     child: ClipRRect(
       borderRadius: BorderRadius.circular(_fullscreen ? 0 : 28),
-      child: ColoredBox(
-        color: Colors.black,
-        child: _started
-            ? RepaintBoundary(
-                child: Video(
-                  key: _videoKey,
-                  controller: _session.video,
-                  controls: NoVideoControls,
-                ),
-              )
-            : Stack(
-                fit: StackFit.expand,
-                children: [
-                  Poster(
-                    repository: widget.model.repository,
-                    url: widget.item.cover,
+      child: _artwork(
+        ColoredBox(
+          color: Colors.black,
+          child: _started
+              ? RepaintBoundary(
+                  child: Video(
+                    key: _videoKey,
+                    controller: _session.video,
+                    controls: NoVideoControls,
                   ),
-                  ColoredBox(color: Colors.black.withValues(alpha: 0.3)),
-                  Center(
-                    child: M3EButton(
-                      onPressed: () => _play(
-                        _loaded?.episodes.firstOrNull?.number ?? 1,
-                        resume: true,
-                      ),
-                      icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text('开始观看'),
-                      size: M3EButtonSize.md,
+                )
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Poster(
+                      repository: widget.model.repository,
+                      url: widget.item.cover,
                     ),
-                  ),
-                ],
-              ),
+                    ColoredBox(color: Colors.black.withValues(alpha: 0.3)),
+                    Center(
+                      child: M3EButton(
+                        onPressed: () => _play(
+                          _loaded?.episodes.firstOrNull?.number ?? 1,
+                          resume: true,
+                        ),
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('开始观看'),
+                        size: M3EButtonSize.md,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
       ),
     ),
   );
@@ -319,11 +363,19 @@ class _DetailScreenState extends State<DetailScreen> {
                   future: _detail,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return StatusPane(
-                        loading: !snapshot.hasError,
-                        error: snapshot.error?.toString(),
-                        onRetry: () => setState(() => _detail = _fetch()),
-                      );
+                      return snapshot.hasError
+                          ? StatusPane(
+                              loading: false,
+                              error: snapshot.error?.toString(),
+                              onRetry: () => setState(() => _detail = _fetch()),
+                            )
+                          : Padding(
+                              padding: const EdgeInsets.all(20),
+                              child: Align(
+                                alignment: Alignment.topCenter,
+                                child: _surface(),
+                              ),
+                            );
                     }
                     final detail = snapshot.data!;
                     final information = Column(
@@ -501,11 +553,13 @@ class _DetailScreenState extends State<DetailScreen> {
               future: _detail,
               builder: (context, snapshot) {
                 if (!snapshot.hasData) {
-                  return StatusPane(
-                    loading: !snapshot.hasError,
-                    error: snapshot.error?.toString(),
-                    onRetry: () => setState(() => _detail = _fetch()),
-                  );
+                  return snapshot.hasError
+                      ? StatusPane(
+                          loading: false,
+                          error: snapshot.error?.toString(),
+                          onRetry: () => setState(() => _detail = _fetch()),
+                        )
+                      : _surface();
                 }
                 return EpisodePager(
                   episodes: _loaded?.episodes ?? const [],
@@ -514,11 +568,13 @@ class _DetailScreenState extends State<DetailScreen> {
                   onPrepare: (ep) =>
                       unawaited(_session.prepareNext(widget.item.id, ep)),
                   video: _started
-                      ? RepaintBoundary(
-                          child: Video(
-                            key: _videoKey,
-                            controller: _session.video,
-                            controls: NoVideoControls,
+                      ? _artwork(
+                          RepaintBoundary(
+                            child: Video(
+                              key: _videoKey,
+                              controller: _session.video,
+                              controls: NoVideoControls,
+                            ),
                           ),
                         )
                       : _surface(),

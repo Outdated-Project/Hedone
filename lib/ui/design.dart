@@ -1,4 +1,7 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/physics.dart' show SpringSimulation;
+import 'package:material_3_expressive/material_3_expressive.dart'
+    show M3EMotion;
 export 'package:material_ui/material_ui.dart' hide CornerRounding;
 export 'package:material_3_expressive/material_3_expressive.dart'
     show
@@ -41,6 +44,7 @@ abstract final class AuroraMotion {
   static const standard = Duration(milliseconds: 360);
   static const emphasized = Duration(milliseconds: 480);
   static const curve = Curves.easeInOutCubicEmphasized;
+  static final Curve spatial = _ExpressiveSpringCurve();
   static Duration duration(BuildContext context, [Duration value = standard]) =>
       MediaQuery.disableAnimationsOf(context) ? Duration.zero : value;
   static Future<T?> open<T>(BuildContext context, Widget page) =>
@@ -57,13 +61,24 @@ abstract final class AuroraMotion {
                 position: Tween(
                   begin: const Offset(0.025, 0.025),
                   end: Offset.zero,
-                ).animate(progress),
+                ).animate(animation.drive(CurveTween(curve: spatial))),
                 child: child,
               ),
             );
           },
         ),
       );
+}
+
+class _ExpressiveSpringCurve extends Curve {
+  final _spring = SpringSimulation(
+    M3EMotion.expressiveSpatialDefault.toDescription(),
+    0,
+    1,
+    0,
+  );
+  @override
+  double transformInternal(double t) => _spring.x(t * .6);
 }
 
 class PageHeading extends StatelessWidget {

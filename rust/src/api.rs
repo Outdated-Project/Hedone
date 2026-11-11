@@ -79,7 +79,7 @@ pub async fn line_probe(urls: Vec<String>) -> Result<Value, String> {
 
 /* ───────────────────────── 更新检查 ───────────────────────── */
 
-const REPO: &str = "Minireel/HGhub";
+const REPO: &str = "Outdated-Project/HGhub";
 
 fn ver_parts(v: &str) -> Vec<u64> {
     v.trim()
