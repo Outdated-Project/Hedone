@@ -19,6 +19,9 @@ String errorMessage(Object error) {
     '',
   );
   if (text == '401') return '登录已过期，请重新登录';
+  if (text == '获取视频列表失败' || text == '上游接口失败：获取视频列表失败') {
+    return '已连接到服务器，但当前线路暂时无法提供视频列表。请重试，或更换数据线路并检测连接。';
+  }
   if (text.contains('no trusted root found') ||
       text.contains('invalid peer certificate') ||
       text.contains('certificate verify') ||

@@ -46,7 +46,9 @@ pub fn resource_id(raw: &str) -> String {
 }
 
 pub fn error_kind(error: &str) -> &'static str {
-    if error.contains("不支持代理") {
+    if error.starts_with("上游接口失败：") {
+        "upstream_business_error"
+    } else if error.contains("不支持代理") {
         "proxy_unsupported"
     } else if error.contains("资源已变化") {
         "media_version_changed"

@@ -122,6 +122,12 @@ void main() {
     expect(message, contains('更换数据线路'));
     expect(message, isNot(contains('<html>')));
   });
+  test('catalogue business failures explain that the server was reached', () {
+    for (final error in ['获取视频列表失败', 'AnyhowException: 上游接口失败：获取视频列表失败']) {
+      expect(errorMessage(error), contains('已连接到服务器'));
+      expect(errorMessage(error), contains('更换数据线路'));
+    }
+  });
   setUpAll(() async {
     for (final entry in {
       'MaterialIcons': 'fonts/MaterialIcons-Regular.otf',
@@ -159,6 +165,66 @@ void main() {
     expect(find.textContaining('连接正常 · 42 ms'), findsOneWidget);
     expect(find.textContaining('HTTP 404'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    model.dispose();
+  });
+
+  testWidgets('automatic recovery selects a verified line and returns', (
+    tester,
+  ) async {
+    final transport = SettingsTransport();
+    final model = AppModel(Repository(transport), MemoryPreferences());
+    await model.initialize();
+    await mount(
+      tester,
+      Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => LinesScreen(model: model),
+              ),
+            ),
+            child: const Text('打开线路'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('打开线路'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('自动选择可用线路'));
+    await tester.tap(find.text('自动选择可用线路'));
+    await tester.pump();
+    transport.probe.complete([
+      {'url': first, 'ok': true, 'ms': 42},
+      {'url': second, 'ok': false, 'status': 404},
+      {'url': 'https://mirror.example', 'ok': false, 'error': '获取视频列表失败'},
+    ]);
+    await tester.pumpAndSettle();
+    expect(model.base, first);
+    expect(transport.calls.where((op) => op == 'line_set'), hasLength(1));
+    expect(find.byType(LinesScreen), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    model.dispose();
+  });
+
+  testWidgets('failed probes never select an unavailable line', (tester) async {
+    final transport = SettingsTransport();
+    final model = AppModel(Repository(transport), MemoryPreferences());
+    await model.initialize();
+    await mount(tester, LinesScreen(model: model));
+    await tester.ensureVisible(find.text('自动选择可用线路'));
+    await tester.tap(find.text('自动选择可用线路'));
+    await tester.pump();
+    transport.probe.complete([
+      {'url': first, 'ok': false, 'error': '获取视频列表失败'},
+      {'url': second, 'ok': false, 'status': 404},
+      {'url': 'https://mirror.example', 'ok': false, 'status': 200},
+    ]);
+    await tester.pumpAndSettle();
+    expect(model.base, second);
+    expect(transport.calls, isNot(contains('line_set')));
+    expect(find.byType(LinesScreen), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     model.dispose();
   });

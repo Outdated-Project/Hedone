@@ -125,6 +125,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
   }
 
+  Future<void> _changeLine() async {
+    await AuroraMotion.open(context, LinesScreen(model: widget.model));
+    // A probe may recover the current origin without changing app identity.
+    if (mounted) await _controller.refresh();
+  }
+
   @override
   Widget build(BuildContext context) => Column(
     children: [
@@ -225,10 +231,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                       )
                     else
                       M3EButton(
-                        onPressed: () => AuroraMotion.open(
-                          context,
-                          LinesScreen(model: widget.model),
-                        ),
+                        onPressed: _changeLine,
                         label: const Text('更换数据线路'),
                         style: M3EButtonStyle.tonal,
                       ),

@@ -45,9 +45,10 @@ class _LinesScreenState extends State<LinesScreen> {
     _discover();
   }
 
-  Future<void> _select(String url) async {
+  Future<bool> _select(String url) async {
     final model = widget.model;
-    if (url == model.base || _selecting != null || _confirming) return;
+    if (url == model.base) return true;
+    if (_selecting != null || _confirming) return false;
     if (model.user != null) {
       _confirming = true;
       final approved = await M3EDialog.show<bool>(
@@ -71,15 +72,17 @@ class _LinesScreenState extends State<LinesScreen> {
         ),
       );
       _confirming = false;
-      if (approved != true || !mounted) return;
+      if (approved != true || !mounted) return false;
     }
     setState(() => _selecting = url);
     AppHaptics.selection(context);
     try {
       await model.setLine(url);
       if (mounted) M3ESnackbar.show(context, message: '已切换数据线路');
+      return true;
     } catch (error) {
       if (mounted) M3ESnackbar.show(context, message: errorMessage(error));
+      return false;
     } finally {
       if (mounted) setState(() => _selecting = null);
     }
@@ -143,28 +146,61 @@ class _LinesScreenState extends State<LinesScreen> {
     }
   }
 
-  Future<void> _probe(List<Json> lines) async {
+  Future<void> _probe(List<Json> lines, {bool selectAvailable = false}) async {
     if (_probing) return;
+    final revision = widget.model.identityRevision;
     setState(() {
       _probing = true;
       _probeCount = 0;
       _probeTotal = lines.length;
     });
     await perform(context, () async {
-      for (var offset = 0; offset < lines.length && mounted; offset += 16) {
-        final batch = lines.skip(offset).take(16).toList();
+      // Small batches let recovery stop as soon as a working content API is found.
+      final batchSize = selectAvailable ? 6 : 16;
+      for (
+        var offset = 0;
+        offset < lines.length && mounted;
+        offset += batchSize
+      ) {
+        final batch = lines.skip(offset).take(batchSize).toList();
         final value = object(
           await widget.model.repository.call('line_probe', {
             'urls': batch.map((line) => string(line['url'])).toList(),
           }),
         );
         if (!mounted) return;
+        final fresh = <String, Json>{
+          for (final result in objects(value['items']))
+            string(result['url']): result,
+        };
         setState(() {
           _probeCount += batch.length;
-          for (final result in objects(value['items'])) {
-            _results[string(result['url'])] = result;
+          for (final line in batch) {
+            _results.remove(string(line['url']));
           }
+          _results.addAll(fresh);
         });
+        if (selectAvailable) {
+          // A manual selection or account change takes priority over this probe.
+          if (revision != widget.model.identityRevision) return;
+          final usable = batch
+              .map((line) => string(line['url']))
+              .where((url) => fresh[url]?['ok'] == true)
+              .toList();
+          if (usable.isNotEmpty) {
+            // Keep a recovered current line; otherwise prefer fixed origins
+            // (listed first) before temporary guest mirrors.
+            final current = widget.model.base;
+            final selected = await _select(
+              usable.contains(current) ? current : usable.first,
+            );
+            if (mounted && selected) Navigator.of(context).pop();
+            return;
+          }
+        }
+      }
+      if (selectAvailable && mounted) {
+        M3ESnackbar.show(context, message: '暂未找到能提供视频的线路，请查看检测结果或稍后刷新镜像。');
       }
     });
     if (mounted) setState(() => _probing = false);
@@ -268,6 +304,14 @@ class _LinesScreenState extends State<LinesScreen> {
                     spacing: 12,
                     runSpacing: 12,
                     children: [
+                      M3EButton(
+                        onPressed:
+                            _probing || _discovering || _selecting != null
+                            ? null
+                            : () => _probe(lines, selectAvailable: true),
+                        label: const Text('自动选择可用线路'),
+                        icon: const Icon(Icons.auto_fix_high_rounded),
+                      ),
                       M3EButton(
                         onPressed: _discovering ? null : _discover,
                         label: Text(_discovering ? '正在查找镜像' : '刷新镜像'),

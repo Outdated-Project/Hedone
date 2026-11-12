@@ -174,15 +174,19 @@ pub(crate) async fn get_media_stream(
     referer: &str,
     range: Option<&str>,
 ) -> Result<crate::transport::Response, String> {
-    get_request(
-        raw,
-        Duration::from_secs(20),
-        None,
-        Some(referer),
-        range,
-        None,
-        true,
-    )
+    // Retry only before response headers/bytes are handed to the player.
+    // A temporary DNS/connect failure must not become a permanent local 502.
+    with_retry(true, || {
+        get_request(
+            raw,
+            Duration::from_secs(20),
+            None,
+            Some(referer),
+            range,
+            None,
+            true,
+        )
+    })
     .await
 }
 async fn get_request(
@@ -355,7 +359,7 @@ pub(crate) async fn probe_content(origin: &str, timeout: Duration) -> Value {
     let started = Instant::now();
     let result = tokio::time::timeout(
         timeout,
-        edge(origin, "GET", "/api/videos?page=1&size=1", None, None),
+        edge(origin, "GET", "/api/videos?page=1&size=24", None, None),
     )
     .await
     .unwrap_or_else(|_| Err("内容接口检测超时".into()));
@@ -376,7 +380,6 @@ fn content_probe_result(result: Result<Value, String>, ms: u64) -> Value {
                 .and_then(|s| s.parse::<u16>().ok())
                 .filter(|code| (100..600).contains(code));
             if let Some(status) = status {
-                // Keep the status, not an upstream HTML error document.
                 json!({"ok": false, "probe": "content_api", "ms": ms, "status": status})
             } else {
                 json!({"ok": false, "probe": "content_api", "ms": ms, "error": error})
@@ -386,6 +389,9 @@ fn content_probe_result(result: Result<Value, String>, ms: u64) -> Value {
 }
 
 fn retryable_error(error: &str) -> bool {
+    if let Some(message) = error.strip_prefix("上游接口失败：") {
+        return message == "获取视频列表失败";
+    }
     if error == "401" || error.contains("当前 Courierust") {
         return false;
     }
@@ -403,6 +409,24 @@ fn retryable_error(error: &str) -> bool {
             | "target_policy_denied"
             | "redirect_error"
     )
+}
+
+fn decode_edge_response(value: Value) -> Result<Value, String> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    if value.get("status").and_then(Value::as_i64) == Some(1) {
+        return Ok(value.get("data").cloned().unwrap_or(Value::Null));
+    }
+    let message = value
+        .get("msg")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("接口返回失败");
+    Err(format!(
+        "上游接口失败：{}",
+        message.chars().take(220).collect::<String>()
+    ))
 }
 
 /// 只重试可能恢复的错误；404/权限错误/安全拒绝直接结束，避免无效等待。
@@ -522,7 +546,7 @@ pub async fn edge(
     // 取播放地址的 POST 没有副作用，和 GET 一样允许重试
     let can_retry = (method.eq_ignore_ascii_case("GET") && body.is_none())
         || (method.eq_ignore_ascii_case("POST") && operation == "play");
-    let value = with_retry(can_retry, || {
+    with_retry(can_retry, || {
         attempt += 1;
         let attempt = attempt;
         let envelope = envelope.clone();
@@ -590,34 +614,22 @@ pub async fn edge(
                 }
                 Err("重定向次数超过限制".into())
             }.await;
+            let business_status = result.as_ref().ok().and_then(|v: &Value| v.get("status")).and_then(Value::as_i64);
+            // Decode before retry/logging: transport success is not business success.
+            let result = result.and_then(decode_edge_response);
             crate::playback_log::record("api.end", json!({
                 "request": request, "attempt": attempt, "operation": operation, "method": method,
                 "line_host": line_host, "target_host": target_host, "status": status_code,
                 "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64,
                 "response_kind": response_kind, "gateway": gateway,
-                "business_status": result.as_ref().ok().and_then(|v: &Value| v.get("status")).and_then(Value::as_i64),
+                "business_status": business_status,
                 "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e)),
                 "retryable": can_retry && result.as_ref().err().is_some_and(|e| retryable_error(e)),
             }));
             result
         }
     })
-    .await?;
-
-    if value.is_null() {
-        return Ok(Value::Null);
-    }
-
-    if value.get("status").and_then(|v| v.as_i64()) == Some(1) {
-        Ok(value.get("data").cloned().unwrap_or(Value::Null))
-    } else {
-        Err(value
-            .get("msg")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("接口返回失败")
-            .to_string())
-    }
+    .await
 }
 
 /// 拉原始字节（图片 / m3u8 / 分片）。
@@ -693,6 +705,42 @@ pub async fn read_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn business_failures_retry_only_transient_reads_and_remain_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for (retry, message, recover, expected) in [
+            (true, "获取视频列表失败", true, 2),
+            (true, "获取视频列表失败", false, 3),
+            (false, "获取视频列表失败", true, 1),
+            (true, "请先登录", true, 1),
+            (true, "参数错误", true, 1),
+        ] {
+            let calls = AtomicUsize::new(0);
+            let result = with_retry(retry, || {
+                let attempt = calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    decode_edge_response(if recover && attempt > 0 {
+                        json!({"status": 1, "data": {"items": [{"id": 42}]}})
+                    } else {
+                        json!({"status": 0, "msg": message})
+                    })
+                }
+            })
+            .await;
+            assert_eq!(calls.load(Ordering::SeqCst), expected);
+            if recover && expected == 2 {
+                assert_eq!(result.unwrap()["items"][0]["id"], json!(42));
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    crate::playback_log::error_kind(&error),
+                    "upstream_business_error"
+                );
+                assert_eq!(content_probe_result(Err(error), 1)["ok"], json!(false));
+            }
+        }
+    }
 
     #[test]
     fn content_probe_requires_a_list_and_preserves_failure_categories() {

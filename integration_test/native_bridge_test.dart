@@ -5,6 +5,7 @@ import 'package:hedone/app.dart';
 import 'package:hedone/core/app_model.dart';
 import 'package:hedone/core/preferences.dart';
 import 'package:hedone/features/license.dart';
+import 'package:hedone/features/browse.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
@@ -90,9 +91,16 @@ void main() {
           debugPrint(jsonEncode(summary));
         }
         final feed = jsonDecode(
-          await bridge.request(payload: '{"op":"feed","page":1,"size":1}'),
+          await bridge.request(payload: '{"op":"feed","page":1,"size":24}'),
         );
-        final id = feed['items'][0]['id'];
+        expect(feed['items'], isNotEmpty);
+        final dramas = jsonDecode(
+          await bridge.request(
+            payload: '{"op":"category","cate":"ai-duanju","page":1,"size":24}',
+          ),
+        );
+        expect(dramas['items'], isNotEmpty);
+        final id = dramas['items'][0]['id'];
         final detail = jsonDecode(
           await bridge.request(payload: jsonEncode({'op': 'video', 'id': id})),
         );
@@ -299,6 +307,21 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
       }
       expect(find.text('发现好故事'), findsOneWidget);
+      if (const String.fromEnvironment('HEDONE_LIVE_BASE').isNotEmpty) {
+        for (
+          var frame = 0;
+          frame < 300 && find.byType(VideoTile).evaluate().isEmpty;
+          frame++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(
+          find.byType(VideoTile),
+          findsWidgets,
+          reason:
+              'the real discovery page must load videos, not only its heading',
+        );
+      }
       // Collapsed desktop rails expose the icon; their text is intentionally
       // outside the hit-test area at intermediate window widths.
       await tester.tap(find.byIcon(Icons.tune_rounded).last);

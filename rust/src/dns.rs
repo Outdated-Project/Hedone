@@ -243,44 +243,79 @@ async fn system(host: String, port: u16) -> Result<Vec<SocketAddr>, String> {
 
 pub async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     let dns = state(None).await?;
+    let encrypted_query = async {
+        tokio::time::timeout(LOOKUP_TIMEOUT, async {
+            let (v4, v6) = tokio::join!(
+                encrypted(dns.clone(), host.to_owned(), RrType::A),
+                encrypted(dns.clone(), host.to_owned(), RrType::AAAA),
+            );
+            combine(v4, v6, port)
+        })
+        .await
+        .map_err(|_| "RecurseX DNS resolution timeout".to_string())
+        .and_then(|r| r)
+    };
+    match lookup_with_fallback(
+        &dns.settings.mode,
+        system(host.to_owned(), port),
+        encrypted_query,
+        SYSTEM_TIMEOUT,
+    )
+    .await
+    {
+        Ok((addresses, used_system)) => {
+            if used_system {
+                &dns.system_answers
+            } else {
+                &dns.encrypted_answers
+            }
+            .fetch_add(1, Ordering::Relaxed);
+            Ok(addresses)
+        }
+        Err(error) => {
+            dns.failures.fetch_add(1, Ordering::Relaxed);
+            Err(error)
+        }
+    }
+}
+
+async fn lookup_with_fallback(
+    mode: &str,
+    system_query: impl std::future::Future<Output = Result<Vec<SocketAddr>, String>>,
+    encrypted_query: impl std::future::Future<Output = Result<Vec<SocketAddr>, String>>,
+    system_timeout: Duration,
+) -> Result<(Vec<SocketAddr>, bool), String> {
+    tokio::pin!(system_query);
     let mut system_fallback = None;
-    if dns.settings.mode != "encrypted" {
-        if let Ok(Ok(addresses)) =
-            tokio::time::timeout(SYSTEM_TIMEOUT, system(host.to_owned(), port)).await
-            && use_system_answer(&dns.settings.mode, &addresses)
+    let mut system_pending = false;
+    if mode != "encrypted" {
+        let answer = tokio::time::timeout(system_timeout, &mut system_query).await;
+        system_pending = answer.is_err();
+        if let Ok(Ok(addresses)) = answer
+            && use_system_answer(mode, &addresses)
         {
-            // Preserve a VPN's validated FakeIP mapping. Ordinary public
-            // answers may still be poisoned, so prefer authenticated DoH.
-            if dns.settings.mode == "system" || contains_fake_ip(&addresses) {
-                dns.system_answers.fetch_add(1, Ordering::Relaxed);
-                return Ok(addresses);
+            if mode == "system" || contains_fake_ip(&addresses) {
+                return Ok((addresses, true));
             }
             system_fallback = Some(addresses);
         }
-        if dns.settings.mode == "system" {
-            dns.failures.fetch_add(1, Ordering::Relaxed);
+        if mode == "system" {
             return Err("System DNS resolution failed or timed out".into());
         }
     }
-    let result = tokio::time::timeout(LOOKUP_TIMEOUT, async {
-        let (v4, v6) = tokio::join!(
-            encrypted(dns.clone(), host.to_owned(), RrType::A),
-            encrypted(dns.clone(), host.to_owned(), RrType::AAAA),
-        );
-        combine(v4, v6, port)
-    })
-    .await
-    .map_err(|_| "RecurseX DNS resolution timeout".to_string())
-    .and_then(|r| r);
-    if result.is_ok() {
-        dns.encrypted_answers.fetch_add(1, Ordering::Relaxed);
-    } else if let Some(addresses) = system_fallback {
-        dns.system_answers.fetch_add(1, Ordering::Relaxed);
-        return Ok(addresses);
-    } else {
-        dns.failures.fetch_add(1, Ordering::Relaxed);
+    let result = encrypted_query.await;
+    if let Ok(addresses) = result {
+        return Ok((addresses, false));
     }
-    result
+    if system_pending
+        && let Ok(Ok(addresses)) = tokio::time::timeout(system_timeout, &mut system_query).await
+        && use_system_answer(mode, &addresses)
+    {
+        system_fallback = Some(addresses);
+    }
+    system_fallback
+        .map(|addresses| (addresses, true))
+        .ok_or_else(|| result.unwrap_err())
 }
 
 fn contains_fake_ip(addresses: &[SocketAddr]) -> bool {
@@ -338,6 +373,57 @@ pub fn diagnostics() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn slow_system_answers_survive_doh_failure_but_still_obey_policy() {
+        for (ip, allowed) in [
+            ("8.8.8.8:443", true),
+            ("198.18.0.4:443", true),
+            ("127.0.0.1:443", false),
+        ] {
+            let address: SocketAddr = ip.parse().unwrap();
+            let result = lookup_with_fallback(
+                "auto",
+                async {
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                    Ok(vec![address])
+                },
+                async {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    Err("DoH unavailable".into())
+                },
+                Duration::from_millis(5),
+            )
+            .await;
+            if allowed {
+                assert_eq!(result.unwrap(), (vec![address], true));
+            } else {
+                assert_eq!(result.unwrap_err(), "DoH unavailable");
+            }
+        }
+        let encrypted = vec!["1.1.1.1:443".parse().unwrap()];
+        let result = lookup_with_fallback(
+            "encrypted",
+            async { panic!("encrypted mode must never start system DNS") },
+            async { Ok(encrypted.clone()) },
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, (encrypted, false));
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            lookup_with_fallback(
+                "auto",
+                std::future::pending(),
+                async { Err("DoH unavailable".into()) },
+                Duration::from_millis(5),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err(), "DoH unavailable");
+    }
 
     #[test]
     fn auto_retries_restricted_system_answers_without_weakening_system_mode() {
