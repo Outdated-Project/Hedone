@@ -1,0 +1,18 @@
+{
+  "sample": "Big Buck Bunny",
+  "platform": "windows",
+  "first_frame_ms": 3645,
+  "decoder": {
+    "backend": "mpv",
+    "hwdec-current": "d3d11va-copy",
+    "video-codec": "h264 ((null))",
+    "video-format": "h264"
+  },
+  "controls_auto_hide": true,
+  "tap_and_options": true,
+  "simulated_lifecycle": true,
+  "page_visibility": true,
+  "resume_ms": 4000,
+  "passed": true,
+  "error": null
+}

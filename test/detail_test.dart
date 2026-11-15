@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hedone/core/app_model.dart';
 import 'package:hedone/data/models.dart';
@@ -27,9 +29,57 @@ class DetailFixture extends FixtureTransport {
   }
 }
 
+class PendingDetailFixture extends DetailFixture {
+  final detail = Completer<Map<String, dynamic>>();
+  bool requestedPlay = false;
+  @override
+  Future<dynamic> request(Map<String, dynamic> payload) {
+    if (payload['op'] == 'video') return detail.future;
+    if (payload['op'] == 'play') requestedPlay = true;
+    return super.request(payload);
+  }
+}
+
 void main() {
+  testWidgets('autoplay requests media before slow details resolve', (
+    tester,
+  ) async {
+    final transport = PendingDetailFixture();
+    final model = AppModel(Repository(transport), MemoryPreferences());
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.dark,
+        builder: (context, child) => AppTheme.scope(context, child!),
+        home: DetailScreen(
+          model: model,
+          item: const VideoItem(
+            id: 1,
+            title: '起播回归',
+            cover: '',
+            episodes: 1,
+            tags: [],
+          ),
+          autoplay: true,
+          immersive: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(transport.requestedPlay, isTrue);
+    expect(transport.detail.isCompleted, isFalse);
+    expect(tester.takeException(), isNull);
+    transport.detail.complete({
+      'id': 1,
+      'title': '起播回归',
+      'episodes': [
+        {'ep_num': 1},
+      ],
+    });
+    await tester.pumpWidget(const SizedBox());
+    model.dispose();
+  });
   testWidgets(
-    'repeated card taps open one route and interrupted entry does not start playback',
+    'repeated card taps open one route and missing decoder is handled',
     (tester) async {
       final model = AppModel(Repository(DetailFixture()), MemoryPreferences());
       final observer = _RouteCounter();

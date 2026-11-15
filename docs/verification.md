@@ -1,5 +1,29 @@
 # 验证
 
+## 2026-11-15：播放可见性、起播与短视频控制层
+
+暂停策略由 PlaybackSession 统一管理。通知遮挡等 `inactive` 状态不再误暂停；隐藏、后台、分离及完整页面覆盖会暂停，并取消尚未完成请求的自动播放。选集、倍速与普通弹窗不暂停，返回播放页不擅自恢复。
+
+点击进入详情后的首帧立即发起播放；详情接口、入场动画和等待时长不再串联阻塞起播。地址解析与视频输出并行准备，续播使用 `Media.start`，迟到的时长只用于纠正片尾历史。切集保留同一个播放器，过期地址不会覆盖新选择，初始化失败进入可重试错误界面。
+
+控制层改为覆盖画面：播放三秒后自动收起，保留两像素进度线；点画面播放/暂停，长按或移动鼠标显示操作。倍速、静音、播放信息与全屏进入设置面板。取消进度拖动不跳转，读屏调节和无障碍导航保持可用。中英文 README 的播放图已重新运行公开非成人样片采集。
+
+- `flutter analyze --no-pub` 无问题；完整 Flutter 回归 **98 项通过**，覆盖临时失焦、后台期间请求完成、快速改选、慢详情接口、续播、解码器缺失、菜单和完整页面的不同暂停行为、手势取消，以及窄屏与双倍字体。
+- Windows Profile 原生集成通过，命令退出码 0。正式 PostVideoScreen 经 Rust 媒体网关播放公开 H.264 样片：最新首帧 **3645 ms**，首次联调为 4266 ms；播放器报告 `d3d11va-copy`。两次结果均不是零延迟，也不是黄果所有片源的耗时承诺。最新原始报告见 [playback-ux-windows.json](benchmarks/playback-ux-windows.json)。
+- 原生验证包括实际画面、播放进度、控制层自动隐藏、点画面切换、设置弹层、页面覆盖暂停，以及从 4 秒位置续播。生命周期通过 Flutter binding 模拟，不能代替物理锁屏。一次联调脚本错误地在隐藏状态等待绘制帧，已修正为等待原生状态事件后复测；首次脚本日志保留在 `build/playback-windows-final.log`，通过日志为 `build/playback-windows-verified.log`。
+- Android PLK110 最初可被 ADB 识别，但开始运行时已断开，后续检查仍为空。本轮没有把 Android 真机起播、锁屏或安装记为通过。
+- Android ARM64 Release 构建通过，安装测试包为 `build/releases/Hedone-1.0.2-playback-arm64-local-test.apk`。使用本机已有开发密钥签名，v2/v3 验签通过，不是商店发行签名。SHA-256：`BA82DE1F63089D3FCB3507E3B2DE9E9043CA0D0DC29AE36BA40287DEE46E68C7`。
+- Windows 正式入口 `flutter build windows --release --no-pub` 构建通过；最终 `build/windows/x64/runner/Release/hedone.exe` 为应用主入口，截图工具与集成测试使用独立入口。
+
+复现真实播放验收（需要联网）：
+
+```powershell
+flutter drive --driver test_driver/playback_ux.dart --target integration_test/playback_ux_test.dart --profile -d windows
+# Android 连接后将 windows 替换为 flutter devices 列出的设备 ID。
+```
+
+驱动将实际结果保存到 `build/playback-ux/report.json`；Android 的截图额外保存到同目录。样片与截图署名见[截图说明](screenshots/README.md)。
+
 ## 2026-11-15：空响应识别与请求超时边界
 
 通用内容请求现在把 HTTP 200 的空正文、HTML 欢迎页和不符合协议的 JSON 分别报告为接口异常，不再把空正文当作成功，也不对这些协议错误自动重试。保留合法空列表，以及带成功业务信封但不返回数据的操作。解析失败与 HTTP 错误不再附带上游正文片段。

@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:hedone/core/app_model.dart';
+import 'package:hedone/core/playback_route.dart';
 import 'package:hedone/core/native_runtime.dart';
 import 'package:hedone/core/preferences.dart';
 import 'package:hedone/data/repository.dart';
@@ -33,6 +34,7 @@ Future<void> main() async {
   runApp(
     MaterialApp(
       navigatorKey: navigator,
+      navigatorObservers: [playbackRouteObserver],
       title: 'Hedone',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
@@ -127,9 +129,13 @@ Future<void> _captureScreens(
       const Duration(seconds: 60),
     );
     final player = controller.player;
+    await player.setPlaylistMode(PlaylistMode.single);
+    await Future<void>.delayed(const Duration(seconds: 4));
+    await save('playback-hidden');
     await player.seek(const Duration(seconds: 3));
     await Future<void>.delayed(const Duration(seconds: 2));
     await player.pause();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     await save('playback');
     final backend = player.platform;
     final report = <String, dynamic>{
@@ -144,10 +150,12 @@ Future<void> _captureScreens(
     await File('${output.path}/capture.json')
         .writeAsString(const JsonEncoder.withIndent('  ').convert(report));
     debugPrint('README capture complete: ${output.path}');
+    if (const bool.fromEnvironment('HEDONE_CAPTURE_EXIT')) exit(0);
   } catch (error, stack) {
     await save('capture-error');
     final logs = await bridge.request(payload: '{"op":"log_read"}');
     await File('${output.path}/capture-error.json').writeAsString(logs);
     debugPrint('README capture failed: $error\n$stack');
+    if (const bool.fromEnvironment('HEDONE_CAPTURE_EXIT')) exit(1);
   }
 }

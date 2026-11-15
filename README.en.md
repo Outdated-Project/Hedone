@@ -12,7 +12,7 @@ The code is licensed under [PolyForm Noncommercial 1.0.0](LICENSE), for **noncom
 
 ![Hedone settings](docs/screenshots/settings.png)
 
-![Hedone playing Big Buck Bunny](docs/screenshots/playback.png)
+![Hedone playing Big Buck Bunny with controls automatically hidden](docs/screenshots/playback-hidden.png)
 
 These are actual Windows captures of the project running. The player shows the publicly licensed Blender Foundation film *Big Buck Bunny*, with no adult content. No generated posters, composited player frames or fabricated catalog entries are used. The film is documentation material, not a Huangguo catalog listing. See [capture instructions and attribution](docs/screenshots/README.md).
 

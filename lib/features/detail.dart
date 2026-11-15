@@ -3,10 +3,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core/fullscreen_session.dart';
-import '../ui/cinema_layout.dart';
+import '../core/playback_route.dart';
+import '../ui/playback_surface.dart';
 
-import 'package:flutter/services.dart';
-import 'package:media_kit_video/media_kit_video.dart';
+import '../ui/playback_video.dart';
 
 import '../core/app_model.dart';
 import '../core/playback_session.dart';
@@ -17,7 +17,6 @@ import '../ui/poster.dart';
 import '../ui/episode_pager.dart';
 import '../ui/episode_picker.dart';
 import '../ui/app_theme.dart';
-import '../ui/playback_controls.dart';
 import 'account.dart';
 import 'comments.dart';
 
@@ -49,45 +48,26 @@ class _DetailScreenState extends State<DetailScreen> {
       _following = false,
       _fullscreen = false;
   Timer? _historyTimer;
-  Animation<double>? _entrance;
   bool _autoplayScheduled = false;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final animation = ModalRoute.of(context)?.animation;
-    if (_entrance != animation) {
-      _entrance?.removeStatusListener(_routeStatus);
-      _entrance = animation;
-      _entrance?.addStatusListener(_routeStatus);
-    }
     _scheduleAutoplay();
   }
 
-  void _routeStatus(AnimationStatus status) {
-    if (status == AnimationStatus.completed) _scheduleAutoplay();
-  }
-
   void _scheduleAutoplay() {
-    if (!widget.autoplay ||
-        _started ||
-        _autoplayScheduled ||
-        _loaded == null ||
-        (_entrance != null && _entrance!.status != AnimationStatus.completed)) {
+    if (!widget.autoplay || _started || _autoplayScheduled) {
       return;
     }
     _autoplayScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _autoplayScheduled = false;
-      if (!mounted ||
-          _started ||
-          ModalRoute.of(context)?.isCurrent == false ||
-          (_entrance != null &&
-              _entrance!.status != AnimationStatus.completed)) {
+      if (!mounted || _started || ModalRoute.of(context)?.isCurrent == false) {
         return;
       }
       if (_fullscreen && !kIsWeb) unawaited(_setFullscreen(true));
       unawaited(
-        _play(_loaded!.episodes.firstOrNull?.number ?? 1, resume: true),
+        _play(_loaded?.episodes.firstOrNull?.number ?? 1, resume: true),
       );
     });
   }
@@ -147,7 +127,9 @@ class _DetailScreenState extends State<DetailScreen> {
     if (resume) {
       for (final entry in widget.model.history) {
         if (entry.video.id == widget.item.id) {
-          if (_loaded?.episodePositions.containsKey(entry.episode) == true) {
+          if (entry.episode > 0 &&
+              (_loaded == null ||
+                  _loaded!.episodePositions.containsKey(entry.episode))) {
             ep = entry.episode;
             position = Duration(milliseconds: entry.positionMs);
           }
@@ -219,7 +201,6 @@ class _DetailScreenState extends State<DetailScreen> {
   void dispose() {
     widget.model.removeListener(_identityChanged);
     _historyTimer?.cancel();
-    _entrance?.removeStatusListener(_routeStatus);
     _session.position.removeListener(_prepareFollowing);
     _keyboard.dispose();
     unawaited(_presentation.close());
@@ -260,7 +241,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _comments() async {
-    if (_started) await _session.player.pause();
+    if (_started) await _session.pause();
     if (!mounted) return;
     await AuroraMotion.open(
       context,
@@ -280,22 +261,22 @@ class _DetailScreenState extends State<DetailScreen> {
     child: child,
   );
 
+  Widget _video() => _artwork(
+    RepaintBoundary(
+      child: PlaybackVideo(key: _videoKey, session: _session),
+    ),
+  );
+
   Widget _surface() => AspectRatio(
     aspectRatio: 16 / 9,
     child: ClipRRect(
       borderRadius: BorderRadius.circular(_fullscreen ? 0 : 28),
-      child: _artwork(
-        ColoredBox(
-          color: Colors.black,
-          child: _started
-              ? RepaintBoundary(
-                  child: Video(
-                    key: _videoKey,
-                    controller: _session.video,
-                    controls: NoVideoControls,
-                  ),
-                )
-              : Stack(
+      child: ColoredBox(
+        color: Colors.black,
+        child: _started
+            ? _playbackSurface(_video())
+            : _artwork(
+                Stack(
                   fit: StackFit.expand,
                   children: [
                     Poster(
@@ -316,193 +297,185 @@ class _DetailScreenState extends State<DetailScreen> {
                     ),
                   ],
                 ),
-        ),
+              ),
       ),
     ),
   );
   @override
-  Widget build(BuildContext context) => PopScope(
-    canPop: !_fullscreen,
-    onPopInvokedWithResult: (didPop, result) {
-      if (!didPop) unawaited(_setFullscreen(false));
-    },
-    child: Scaffold(
-      appBar: _fullscreen
-          ? null
-          : M3EAppBar.top(
-              titleText: widget.item.title,
-              automaticallyImplyLeading: true,
-            ),
-      body: SafeArea(
-        child: KeyboardListener(
-          focusNode: _keyboard,
-          autofocus: true,
-          onKeyEvent: (event) {
-            if (event is! KeyDownEvent || !_started) return;
-            if (event.logicalKey == LogicalKeyboardKey.space) {
-              unawaited(_session.player.playOrPause());
-            }
-            if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-              unawaited(
-                _session.seek(
-                  _session.position.value + const Duration(seconds: 10),
-                ),
-              );
-            }
-            if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-              unawaited(
-                _session.seek(
-                  _session.position.value - const Duration(seconds: 10),
-                ),
-              );
-            }
-          },
-          child: _fullscreen
-              ? _immersivePlayer()
-              : FutureBuilder<VideoDetail>(
-                  future: _detail,
-                  builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return snapshot.hasError
-                          ? StatusPane(
-                              loading: false,
-                              error: snapshot.error?.toString(),
-                              onRetry: () => setState(() => _detail = _fetch()),
-                            )
-                          : Padding(
-                              padding: const EdgeInsets.all(20),
-                              child: Align(
-                                alignment: Alignment.topCenter,
-                                child: _surface(),
-                              ),
-                            );
-                    }
-                    final detail = snapshot.data!;
-                    final information = Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          detail.item.title,
-                          style: Theme.of(context).textTheme.headlineMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 14),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: detail.item.tags
-                              .take(8)
-                              .map((t) => M3EChip(label: t))
-                              .toList(),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          detail.description,
-                          style: Theme.of(context).textTheme.bodyLarge
-                              ?.copyWith(height: 1.65),
-                        ),
-                        const SizedBox(height: 20),
-                        if (string(detail.author['name']).isNotEmpty)
-                          M3EListItem(
-                            headline: plainText(detail.author['name']),
-                            supportingText: '创作者',
-                            leading: const Icon(Icons.account_circle_outlined),
-                            trailing: M3EButton(
-                              onPressed: _busy ? null : () => _action('follow'),
-                              label: Text(_following ? '已关注' : '关注'),
-                              style: M3EButtonStyle.tonal,
-                            ),
+  Widget build(BuildContext context) => PlaybackRoute(
+    session: _session,
+    child: PopScope(
+      canPop: !_fullscreen,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) unawaited(_setFullscreen(false));
+      },
+      child: Scaffold(
+        appBar: _fullscreen
+            ? null
+            : M3EAppBar.top(
+                titleText: widget.item.title,
+                automaticallyImplyLeading: true,
+              ),
+        body: SafeArea(
+          child: Focus(
+            focusNode: _keyboard,
+            autofocus: true,
+            child: _fullscreen
+                ? _immersivePlayer()
+                : FutureBuilder<VideoDetail>(
+                    future: _detail,
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData) {
+                        return snapshot.hasError && !_started
+                            ? StatusPane(
+                                loading: false,
+                                error: snapshot.error?.toString(),
+                                onRetry: () =>
+                                    setState(() => _detail = _fetch()),
+                              )
+                            : Padding(
+                                padding: const EdgeInsets.all(20),
+                                child: Align(
+                                  alignment: Alignment.topCenter,
+                                  child: _surface(),
+                                ),
+                              );
+                      }
+                      final detail = snapshot.data!;
+                      final information = Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            detail.item.title,
+                            style: Theme.of(context).textTheme.headlineMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
                           ),
-                        const SizedBox(height: 16),
-                        ListenableBuilder(
-                          listenable: widget.model,
-                          builder: (context, _) => Wrap(
-                            spacing: 10,
-                            runSpacing: 10,
-                            children: [
-                              M3EButton(
+                          const SizedBox(height: 14),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: detail.item.tags
+                                .take(8)
+                                .map((t) => M3EChip(label: t))
+                                .toList(),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            detail.description,
+                            style: Theme.of(context).textTheme.bodyLarge
+                                ?.copyWith(height: 1.65),
+                          ),
+                          const SizedBox(height: 20),
+                          if (string(detail.author['name']).isNotEmpty)
+                            M3EListItem(
+                              headline: plainText(detail.author['name']),
+                              supportingText: '创作者',
+                              leading: const Icon(
+                                Icons.account_circle_outlined,
+                              ),
+                              trailing: M3EButton(
                                 onPressed: _busy
                                     ? null
-                                    : () => _action('collect'),
-                                icon: Icon(
-                                  _collected
-                                      ? Icons.bookmark_rounded
-                                      : Icons.bookmark_border_rounded,
-                                ),
-                                label: const Text('收藏'),
+                                    : () => _action('follow'),
+                                label: Text(_following ? '已关注' : '关注'),
                                 style: M3EButtonStyle.tonal,
                               ),
-                              M3EButton(
-                                onPressed: _busy ? null : () => _action('like'),
-                                icon: Icon(
-                                  _liked
-                                      ? Icons.favorite_rounded
-                                      : Icons.favorite_border_rounded,
-                                ),
-                                label: const Text('点赞'),
-                                style: M3EButtonStyle.tonal,
-                              ),
-                              M3EButton(
-                                onPressed: _comments,
-                                icon: const Icon(
-                                  Icons.chat_bubble_outline_rounded,
-                                ),
-                                label: const Text('评论'),
-                                style: M3EButtonStyle.tonal,
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 28),
-                        Text(
-                          '选集',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                        const SizedBox(height: 14),
-                        if (detail.episodes.isEmpty)
-                          const Text('上游未提供分集列表，可尝试播放默认集。')
-                        else
-                          M3EButton(
-                            onPressed: _chooseEpisode,
-                            icon: const Icon(Icons.grid_view_rounded),
-                            label: Text(
-                              '第 $_episode 集 · 共 ${detail.episodes.length} 集',
                             ),
-                            style: M3EButtonStyle.tonal,
-                          ),
-                      ],
-                    );
-                    return LayoutBuilder(
-                      builder: (context, constraints) {
-                        final wide = constraints.maxWidth >= 1100;
-                        final playback = Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [_surface(), if (_started) _controls()],
-                        );
-                        return SingleChildScrollView(
-                          padding: EdgeInsets.all(wide ? 32 : 20),
-                          child: wide
-                              ? Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(flex: 3, child: playback),
-                                    const SizedBox(width: 32),
-                                    Expanded(flex: 2, child: information),
-                                  ],
-                                )
-                              : Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    playback,
-                                    const SizedBox(height: 24),
-                                    information,
-                                  ],
+                          const SizedBox(height: 16),
+                          ListenableBuilder(
+                            listenable: widget.model,
+                            builder: (context, _) => Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                M3EButton(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _action('collect'),
+                                  icon: Icon(
+                                    _collected
+                                        ? Icons.bookmark_rounded
+                                        : Icons.bookmark_border_rounded,
+                                  ),
+                                  label: const Text('收藏'),
+                                  style: M3EButtonStyle.tonal,
                                 ),
-                        );
-                      },
-                    );
-                  },
-                ),
+                                M3EButton(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _action('like'),
+                                  icon: Icon(
+                                    _liked
+                                        ? Icons.favorite_rounded
+                                        : Icons.favorite_border_rounded,
+                                  ),
+                                  label: const Text('点赞'),
+                                  style: M3EButtonStyle.tonal,
+                                ),
+                                M3EButton(
+                                  onPressed: _comments,
+                                  icon: const Icon(
+                                    Icons.chat_bubble_outline_rounded,
+                                  ),
+                                  label: const Text('评论'),
+                                  style: M3EButtonStyle.tonal,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 28),
+                          Text(
+                            '选集',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 14),
+                          if (detail.episodes.isEmpty)
+                            const Text('上游未提供分集列表，可尝试播放默认集。')
+                          else
+                            M3EButton(
+                              onPressed: _chooseEpisode,
+                              icon: const Icon(Icons.grid_view_rounded),
+                              label: Text(
+                                '第 $_episode 集 · 共 ${detail.episodes.length} 集',
+                              ),
+                              style: M3EButtonStyle.tonal,
+                            ),
+                        ],
+                      );
+                      return LayoutBuilder(
+                        builder: (context, constraints) {
+                          final wide = constraints.maxWidth >= 1100;
+                          final playback = Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [_surface()],
+                          );
+                          return SingleChildScrollView(
+                            padding: EdgeInsets.all(wide ? 32 : 20),
+                            child: wide
+                                ? Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(flex: 3, child: playback),
+                                      const SizedBox(width: 32),
+                                      Expanded(flex: 2, child: information),
+                                    ],
+                                  )
+                                : Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      playback,
+                                      const SizedBox(height: 24),
+                                      information,
+                                    ],
+                                  ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+          ),
         ),
       ),
     ),
@@ -523,61 +496,56 @@ class _DetailScreenState extends State<DetailScreen> {
         context,
         ColoredBox(
           color: Colors.black,
-          child: CinemaLayout(
-            header: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              child: Row(
-                children: [
-                  M3EIconButton(
-                    icon: const Icon(Icons.arrow_back_rounded),
-                    tooltip: '返回详情',
-                    onPressed: () => unawaited(_setFullscreen(false)),
-                  ),
-                  Expanded(
-                    child: Text(
-                      widget.item.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium,
+          child: FutureBuilder<VideoDetail>(
+            future: _detail,
+            builder: (context, snapshot) {
+              final header = Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      tooltip: '返回详情',
+                      onPressed: () => unawaited(_setFullscreen(false)),
                     ),
-                  ),
-                  M3EButton(
-                    onPressed: _chooseEpisode,
-                    label: const Text('选集'),
-                    style: M3EButtonStyle.tonal,
-                  ),
-                ],
-              ),
-            ),
-            video: FutureBuilder<VideoDetail>(
-              future: _detail,
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return snapshot.hasError
-                      ? StatusPane(
-                          loading: false,
-                          error: snapshot.error?.toString(),
+                    Expanded(
+                      child: Text(
+                        widget.item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _chooseEpisode,
+                      child: const Text('选集'),
+                    ),
+                  ],
+                ),
+              );
+              if (!_started) {
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(child: _surface()),
+                    Positioned(top: 0, left: 0, right: 0, child: header),
+                    if (snapshot.hasError)
+                      Center(
+                        child: StatusPane(
+                          error: snapshot.error.toString(),
                           onRetry: () => setState(() => _detail = _fetch()),
-                        )
-                      : _surface();
-                }
-                return EpisodePager(
+                        ),
+                      ),
+                  ],
+                );
+              }
+              return _playbackSurface(
+                EpisodePager(
                   episodes: _loaded?.episodes ?? const [],
                   selected: _episode,
                   onSelect: (ep) => unawaited(_play(ep)),
                   onPrepare: (ep) =>
                       unawaited(_session.prepareNext(widget.item.id, ep)),
-                  video: _started
-                      ? _artwork(
-                          RepaintBoundary(
-                            child: Video(
-                              key: _videoKey,
-                              controller: _session.video,
-                              controls: NoVideoControls,
-                            ),
-                          ),
-                        )
-                      : _surface(),
+                  video: _video(),
                   placeholder: (context, episode) => Stack(
                     fit: StackFit.expand,
                     children: [
@@ -595,32 +563,31 @@ class _DetailScreenState extends State<DetailScreen> {
                       ),
                     ],
                   ),
-                );
-              },
-            ),
-            controls: _started
-                ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: _controls(),
-                  )
-                : const SizedBox.shrink(),
+                ),
+                header: header,
+              );
+            },
           ),
         ),
       ),
     ),
   );
 
+  final _playbackKey = GlobalKey();
   late final FocusNode _keyboard = FocusNode(debugLabel: 'player shortcuts');
-  Widget _controls() => PlaybackControls(
+  Widget _playbackSurface(Widget video, {Widget? header}) => PlaybackSurface(
+    key: _playbackKey,
     session: _session,
+    video: video,
+    header: header,
     episode: _episode,
     onNext:
         (_loaded?.episodePositions[_episode] ?? -1) >= 0 &&
-            (_loaded?.episodes.last.number != _episode)
+            _loaded?.episodes.last.number != _episode
         ? _next
         : null,
-    onFullscreen: () => unawaited(_setFullscreen(!_presentation.active)),
+    onFullscreen: () => unawaited(_setFullscreen(!_fullscreen)),
     fullscreen: _fullscreen,
-    onRetry: () => _play(_episode, fresh: true),
+    onRetry: () => unawaited(_play(_episode, fresh: true)),
   );
 }

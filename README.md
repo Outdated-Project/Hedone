@@ -12,7 +12,7 @@ Hedone 是基于 Flutter 与 Rust 的黄果客户端。浏览、搜索、收藏�
 
 ![Hedone 设置界面](docs/screenshots/settings.png)
 
-![Hedone 播放 Big Buck Bunny](docs/screenshots/playback.png)
+![Hedone 播放 Big Buck Bunny，控制栏已自动收起](docs/screenshots/playback-hidden.png)
 
 以上是 Windows 上运行项目代码的实际截图。播放画面来自 Blender Foundation 的公开短片 *Big Buck Bunny*，不含成人内容；没有生成海报、拼接播放器或伪造片库数据。短片只用于文档展示，不作为黄果片库内容。截图复现步骤与素材署名见[截图说明](docs/screenshots/README.md)。
 

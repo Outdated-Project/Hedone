@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'core/preferences.dart';
+import 'core/playback_route.dart';
 
 import 'core/app_model.dart';
 import 'data/repository.dart';
@@ -79,6 +80,7 @@ class _HedoneAppState extends State<HedoneApp> {
     listenable: _appearance,
     builder: (context, _) => MaterialApp(
       navigatorKey: _navigator,
+      navigatorObservers: [playbackRouteObserver],
       title: 'Hedone · 黄果',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,

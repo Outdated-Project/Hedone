@@ -2,14 +2,14 @@ import 'dart:async';
 
 import '../core/fullscreen_session.dart';
 import '../ui/feedback.dart';
-import '../ui/cinema_layout.dart';
+import '../core/playback_route.dart';
 
-import 'package:media_kit_video/media_kit_video.dart';
+import '../ui/playback_video.dart';
 
 import '../core/playback_session.dart';
 import '../data/repository.dart';
 import '../ui/design.dart';
-import '../ui/playback_controls.dart';
+import '../ui/playback_surface.dart';
 
 class PostVideoScreen extends StatefulWidget {
   const PostVideoScreen({
@@ -51,31 +51,29 @@ class _PostVideoScreenState extends State<PostVideoScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => PopScope(
-    canPop: !_cinema,
-    onPopInvokedWithResult: (didPop, _) {
-      if (!didPop && _cinema) unawaited(_setFullscreen(false));
-    },
-    child: Scaffold(
-      appBar: _cinema
-          ? null
-          : M3EAppBar.top(
-              titleText: widget.title,
-              automaticallyImplyLeading: true,
-            ),
-      body: SafeArea(
-        child: CinemaLayout(
-          video: Video(controller: _session.video, controls: NoVideoControls),
-          controls: Padding(
-            padding: const EdgeInsets.all(16),
-            child: PlaybackControls(
-              session: _session,
-              episode: 1,
-              onNext: null,
-              onFullscreen: () => unawaited(_setFullscreen(!_cinema)),
-              fullscreen: _cinema,
-              onRetry: () => unawaited(_open()),
-            ),
+  Widget build(BuildContext context) => PlaybackRoute(
+    session: _session,
+    child: PopScope(
+      canPop: !_cinema,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _cinema) unawaited(_setFullscreen(false));
+      },
+      child: Scaffold(
+        appBar: _cinema
+            ? null
+            : M3EAppBar.top(
+                titleText: widget.title,
+                automaticallyImplyLeading: true,
+              ),
+        body: SafeArea(
+          child: PlaybackSurface(
+            session: _session,
+            video: PlaybackVideo(session: _session),
+            episode: 1,
+            onNext: null,
+            onFullscreen: () => unawaited(_setFullscreen(!_cinema)),
+            fullscreen: _cinema,
+            onRetry: () => unawaited(_open()),
           ),
         ),
       ),
