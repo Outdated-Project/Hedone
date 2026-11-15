@@ -20,6 +20,39 @@ class SurfaceProbeState extends State<SurfaceProbe> {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('landscape controls remain readable above a black video', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    Brightness? brightness;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: CinemaLayout(
+            video: const ColoredBox(color: Colors.black),
+            controls: Builder(
+              builder: (context) {
+                brightness = Theme.of(context).brightness;
+                return const Text('播放信息');
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    for (final size in [const Size(800, 400), const Size(400, 800)]) {
+      tester.view.physicalSize = size;
+      await tester.pumpAndSettle();
+      expect(
+        brightness,
+        size.width > size.height ? Brightness.dark : Brightness.light,
+      );
+      expect(tester.takeException(), isNull);
+    }
+  });
   testWidgets('rotation retains the episode pager and video surface', (
     tester,
   ) async {

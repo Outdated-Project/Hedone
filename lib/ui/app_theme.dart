@@ -6,7 +6,7 @@ abstract final class AppTheme {
   static final dark = _create(Brightness.dark);
 
   static ThemeData _create(Brightness brightness) {
-    const seed = Color(0xFFB85C38);
+    const seed = Color(0xFF526B3D);
     final data =
         (brightness == Brightness.light
                 ? M3EThemeData.light(seedColor: seed)

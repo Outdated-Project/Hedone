@@ -5,13 +5,31 @@ use axum::{
     body::Bytes,
     http::{HeaderMap, StatusCode},
 };
-use std::{io, net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{Semaphore, SemaphorePermit};
 pub type Error = io::Error;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_TIMEOUT: Duration = Duration::from_secs(20);
 static WORKERS: Semaphore = Semaphore::const_new(4);
 static MEDIA_WORKERS: Semaphore = Semaphore::const_new(2);
+// Reqwest 0.13 defaults to a platform verifier, which needs Android JNI setup.
+// Use an explicit Rustls configuration for this Flutter native library instead;
+// keep system enterprise CAs plus Mozilla roots and the existing ring provider.
+static TLS: once_cell::sync::Lazy<Arc<rustls::ClientConfig>> = once_cell::sync::Lazy::new(|| {
+    let mut roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    )
+});
 fn error(e: impl std::fmt::Display) -> Error {
     io::Error::other(e.to_string())
 }
@@ -43,7 +61,7 @@ impl Client {
         }
         let host = target.host_str().ok_or("目标缺少主机名")?;
         let mut builder = reqwest::Client::builder()
-            .use_rustls_tls()
+            .tls_backend_preconfigured(TLS.as_ref().clone())
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
@@ -317,6 +335,21 @@ mod tests {
                 .is_err()
         );
     }
+    #[tokio::test]
+    #[ignore = "requires the public Big Buck Bunny test video"]
+    async fn live_public_video_stream() {
+        let mut response = crate::net::get_media_stream(
+            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
+            "https://test-videos.co.uk/",
+            Some("bytes=0-1023"),
+        )
+        .await
+        .unwrap();
+        assert!(response.status().is_success(), "HTTP {}", response.status());
+        let bytes = response.chunk().await.unwrap().unwrap();
+        assert!(bytes.windows(4).any(|part| part == b"ftyp"));
+    }
+
     #[tokio::test]
     #[ignore = "live direct HTTPS requests with normal certificate verification"]
     async fn live_bundled_roots_validate_primary_origin() {

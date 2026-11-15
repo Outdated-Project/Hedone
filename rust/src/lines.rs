@@ -233,6 +233,43 @@ fn strip_line_comments(body: &str) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "requires upstream network; run with NO_PROXY=* and no HEDONE_PROXY"]
+    async fn live_direct_routes() {
+        let mut usable = false;
+        let origins = std::env::var("HEDONE_TEST_ORIGIN")
+            .map(|origin| vec![origin])
+            .unwrap_or_else(|_| FIXED.iter().map(|(_, origin)| origin.to_string()).collect());
+        for raw in origins {
+            let origin = crate::net::normalize_base(&raw).expect("valid HTTPS test origin");
+            let target = url::Url::parse(&origin).unwrap();
+            let addresses = crate::dns::lookup(target.host_str().unwrap(), 443)
+                .await
+                .unwrap();
+            assert!(
+                !addresses.iter().any(|address| {
+                    let v4 = match address.ip() {
+                        std::net::IpAddr::V4(ip) => Some(ip),
+                        std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped(),
+                    };
+                    v4.is_some_and(|ip| ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19))
+                }),
+                "FakeIP cannot demonstrate direct connectivity; disable the VPN before testing"
+            );
+            assert!(
+                crate::proxy::for_url(&target).unwrap().is_none(),
+                "direct probe requires NO_PROXY=*"
+            );
+            let report = crate::net::probe_content(&origin, Duration::from_secs(25)).await;
+            println!("{origin}: {report}");
+            usable |= report.get("ok").and_then(Value::as_bool) == Some(true);
+        }
+        assert!(
+            usable,
+            "no tested route serves the content API on this network"
+        );
+    }
+
     const SAMPLE: &str = r#"
 var subdomains = [
     'thu',  // 清华

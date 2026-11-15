@@ -1,8 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
-  <rect width="108" height="108" rx="26" fill="#E5EACF"/>
-  <g fill="none" stroke="#465720" stroke-width="9" stroke-linecap="round">
-    <path d="M35 32V76M70 44V76M35 55C45 44 60 44 70 55"/>
-    <path d="M44 69Q53 79 62 69" stroke-width="4"/>
-  </g>
-  <path d="M73 22Q75 31 84 33Q75 35 73 44Q71 35 62 33Q71 31 73 22Z" fill="#465720"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="Hedone">
+  <rect width="108" height="108" rx="24" fill="#172522"/>
+  <path fill="#D5F3AC" d="M32 28 L39 28 C41 28 42 29 42 31 L42 48 L66 40 L66 31 C66 29 67 28 69 28 L76 28 C78 28 79 29 79 31 L79 77 C79 79 78 80 76 80 L69 80 C67 80 66 79 66 77 L66 54 L42 62 L42 77 C42 79 41 80 39 80 L32 80 C30 80 29 79 29 77 L29 31 C29 29 30 28 32 28 Z"/>
 </svg>

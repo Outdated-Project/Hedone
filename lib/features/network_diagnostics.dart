@@ -82,6 +82,12 @@ class _NetworkDiagnosticsScreenState extends State<NetworkDiagnosticsScreen> {
         http['error'] == null &&
         (contentProbe ? http['ok'] == true : status >= 200 && status < 400);
     final connected = dnsOk && httpOk;
+    final contentError = const {
+      'empty_api_response',
+      'html_api_response',
+      'invalid_api_response',
+      'upstream_business_error',
+    }.contains(http['error_kind']);
     final proxy = object(report['env']).entries
         .any((e) => e.key != 'NO_PROXY' && e.value != null);
     return Column(
@@ -117,6 +123,8 @@ class _NetworkDiagnosticsScreenState extends State<NetworkDiagnosticsScreen> {
               ? contentProbe
                     ? '内容接口正常'
                     : '安全连接正常'
+              : contentError
+              ? '内容接口异常'
               : http['error'] != null
               ? '安全连接失败'
               : '服务器响应异常',

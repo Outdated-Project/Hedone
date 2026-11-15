@@ -4,7 +4,9 @@
 
 ## HTTP 与 TLS
 
-内容、图片和媒体请求使用 Reqwest 0.12 / Rustls 0.23。Rustls 根据服务器证书构建验证路径，检查签名、有效期和目标名称；信任锚来自系统证书库与 webpki-roots。交叉签名回归覆盖完整 GTS 链、错误域名、过期和损坏签名。没有截短链、固定信任叶证书或跳过验证的分支。
+内容、图片和媒体请求使用 Reqwest 0.13.5 / Rustls 0.23。Rustls 根据服务器证书构建验证路径，检查签名、有效期和目标名称；信任锚来自系统证书库与 webpki-roots。交叉签名回归覆盖完整 GTS 链、错误域名、过期和损坏签名。没有截短链、固定信任叶证书或跳过验证的分支。
+
+0.13 使用 `rustls-no-provider`，由 `transport.rs` 显式传入以 ring 构建的 Rustls 配置，证书集合由 rustls-native-certs 0.8.5 与 webpki-roots 合并。这样保留企业系统 CA 与公共 CA，也不依赖 Android 上额外初始化 Reqwest 默认平台验证器的 JNI。配置按进程复用，不在每次请求时重新读取证书库。
 
 `net.rs` 负责 URL、凭据、重定向和客户端缓存；`transport.rs` 负责连接及有界响应。直连使用已经检查的 DNS 地址，保留原 Host 和 TLS 目标名；客户端按来源与安全模式隔离，缓存 30 秒。自动重定向、自动 Referer 与传输层重试关闭。业务层只对允许重试的幂等操作重试，写操作不重放。
 
@@ -16,7 +18,7 @@ HTTP/SOCKS5 代理按显式配置、环境和 Windows 固定系统设置选取�
 
 ## DNS 与数据
 
-RecurseX 0.2.6 保留系统解析与有界 DoH 回退；其 Courierust 1.1.2 仅用于 DNS 加密上游，不再承担内容线路 TLS。系统信任库不可读取或为空时，DNS 使用随包 Mozilla CA。该包是公开证书数据，不是第三方源码。
+RecurseX 0.2.6 保留系统解析与有界 DoH 回退；其 Courierust 1.1.3 仅用于 DNS 加密上游，不承担内容线路 TLS。系统信任库不可读取或为空时，DNS 使用随包 Mozilla CA。该包是公开证书数据，不是第三方源码。
 
 只启用 `std`、`doh`、`persist`，不编译应用未使用的 DoT、DoH3、DoQ 与 DNSSEC 验证。加密解析明确禁止明文递归；同一地址族按配置顺序尝试上游，不进行上游竞速，最多接触配置中的 1–4 个 IP。A/AAAA 仍并行查询。TLS 身份验证不等于 DNSSEC 验证，诊断明确返回 `dnssec_validation: false`。
 
@@ -28,4 +30,6 @@ Material 3 Expressive 组件由 material_3_expressive 与 material_ui 提供。G
 
 许可证使用 flutter_markdown_plus 渲染，标题有语义标记，内部链接定位章节，外链只接受 HTTPS。正文直接读取 LICENSE，不改写授权条款。
 
-media_kit 管理解码，页面共用 PlaybackSession 和 FullscreenSession。播放器按需创建，未播放时不初始化解码器。横竖屏保持播放器槽位稳定；浏览器全屏仍受用户手势限制。
+media_kit 管理解码，页面共用 PlaybackSession 和 FullscreenSession。播放器按需创建，未播放时不初始化解码器。统一配置 `enableHardwareAcceleration: true` 和 `hwdec: auto-safe`，先等待视频控制器完成配置再打开媒体。“播放信息”读取 mpv 的 `hwdec-current`，区分实际硬件解码、软件回退和未知状态，不把配置意图当作运行结果。横竖屏保持播放器槽位稳定；浏览器全屏仍受用户手势限制。
+
+应用没有转码或视频导出操作，不使用编码器。硬件解码的格式支持由设备、驱动、系统与打包的播放器后端共同决定；Web 由浏览器管理，不能由 Flutter 强制所有视频使用 GPU。

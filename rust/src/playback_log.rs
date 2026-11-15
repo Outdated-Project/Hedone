@@ -46,7 +46,13 @@ pub fn resource_id(raw: &str) -> String {
 }
 
 pub fn error_kind(error: &str) -> &'static str {
-    if error.starts_with("上游接口失败：") {
+    if error == "内容接口返回空响应" {
+        "empty_api_response"
+    } else if error == "内容接口返回网页而非接口数据" {
+        "html_api_response"
+    } else if error == "内容接口响应格式无效" {
+        "invalid_api_response"
+    } else if error.starts_with("上游接口失败：") {
         "upstream_business_error"
     } else if error.contains("不支持代理") {
         "proxy_unsupported"

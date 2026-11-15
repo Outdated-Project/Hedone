@@ -7,6 +7,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../data/repository.dart';
 import '../data/transport.dart';
+import 'decoder_info.dart';
 
 /// One decoder per open detail page. All opens are ordered; obsolete loads are discarded.
 class PlaybackSession extends ChangeNotifier with WidgetsBindingObserver {
@@ -71,7 +72,20 @@ class PlaybackSession extends ChangeNotifier with WidgetsBindingObserver {
   final Repository repository;
   bool _created = false;
   late final Player player = _createPlayer();
-  late final VideoController video = VideoController(player);
+  late final VideoController video = VideoController(
+    player,
+    configuration: const VideoControllerConfiguration(
+      enableHardwareAcceleration: true,
+      hwdec: 'auto-safe',
+    ),
+  );
+
+  /// Actual backend state; requesting hardware decoding alone is not proof.
+  Future<Map<String, String>> decoderInfo() async {
+    if (!_created || _disposed) return {'backend': 'idle'};
+    return readDecoderInfo(player);
+  }
+
   final ValueNotifier<Duration> position = ValueNotifier(Duration.zero);
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Future<void> _queue = Future.value();
@@ -121,6 +135,10 @@ class PlaybackSession extends ChangeNotifier with WidgetsBindingObserver {
     position.value = Duration.zero;
     _notify();
     try {
+      // Configure the video output before opening any media, including posts
+      // and immersive playback. Initialization failures reach the retry UI.
+      await video.platform.future;
+      if (_disposed || generation != _generation) return;
       await player.pause();
       if (_disposed || generation != _generation) return;
       final url = directUrl == null

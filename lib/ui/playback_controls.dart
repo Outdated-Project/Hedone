@@ -29,6 +29,38 @@ class _PlaybackControlsState extends State<PlaybackControls> {
   bool get _muted => widget.session.player.state.volume == 0;
   String _time(Duration d) =>
       '${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+
+  Future<void> _decoderInfo() => perform(context, () async {
+    final info = await widget.session.decoderInfo();
+    if (!mounted) return;
+    final hardware = info['hwdec-current'];
+    final status = info['backend'] == 'browser'
+        ? '由浏览器管理硬件加速'
+        : hardware == 'no'
+        ? '软件解码 · 当前设备未启用此格式的硬件解码'
+        : hardware == null || hardware.isEmpty || hardware == 'unavailable'
+        ? '尚未获取解码器状态'
+        : '硬件解码 · $hardware';
+    await M3EDialog.show(
+      context,
+      dialog: M3EDialog(
+        title: '播放信息',
+        content: Text(
+          [
+            status,
+            if (info['video-codec'] case final String codec) '编码：$codec',
+            if (info['video-format'] case final String format) '格式：$format',
+          ].join('\n'),
+        ),
+        actions: [
+          M3EButton(
+            onPressed: () => Navigator.pop(context),
+            label: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  });
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.session,
@@ -39,7 +71,7 @@ class _PlaybackControlsState extends State<PlaybackControls> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (s.loading || s.buffering)
+            if (s.error == null && (s.loading || s.buffering))
               const SizedBox(
                 height: 30,
                 width: 30,
@@ -169,6 +201,12 @@ class _PlaybackControlsState extends State<PlaybackControls> {
                     await s.player.setVolume(_muted ? 100 : 0);
                     if (mounted) setState(() {});
                   }),
+                  variant: M3EIconButtonVariant.tonal,
+                ),
+                M3EIconButton(
+                  icon: const Icon(Icons.info_outline_rounded),
+                  tooltip: '播放信息',
+                  onPressed: _decoderInfo,
                   variant: M3EIconButtonVariant.tonal,
                 ),
                 M3EIconButton(

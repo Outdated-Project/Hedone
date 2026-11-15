@@ -97,6 +97,11 @@ fn build_client(
 }
 
 const CLIENT_TTL: Duration = Duration::from_secs(30);
+// One attempt includes DNS, client admission, all redirects and the response body.
+const EDGE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+const EMPTY_API_RESPONSE: &str = "内容接口返回空响应";
+const HTML_API_RESPONSE: &str = "内容接口返回网页而非接口数据";
+const INVALID_API_RESPONSE: &str = "内容接口响应格式无效";
 type ClientCache = HashMap<String, (Instant, Arc<crate::transport::Client>)>;
 static CLIENTS: Lazy<Mutex<ClientCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -269,6 +274,7 @@ static LAST_HEAL: Lazy<std::sync::Mutex<Option<Instant>>> =
 pub fn heal_client(reason: &str) {
     let connectish = reason.contains("Connect")
         || reason.contains("timed out")
+        || reason.contains("超时")
         || reason.contains("refused")
         || reason.contains("dns");
     if !is_proxy_error(reason) && !connectish {
@@ -341,7 +347,7 @@ pub async fn diagnose() -> Value {
         "host": host,
         "dns": dns,
         "resolver": crate::dns::diagnostics(),
-        "transport": {"library": "Reqwest 0.12 / Rustls 0.23 (crates.io)", "pinned_direct": true, "address_fallback": true, "proxy": true, "upstream_streaming": true, "media_streams": 2, "media_chunk_bytes": 32768, "max_response_bytes": 8 * 1024 * 1024, "max_in_flight": 4, "max_idle_per_origin": 2},
+        "transport": {"library": "Reqwest 0.13.5 / Rustls 0.23 (crates.io)", "pinned_direct": true, "address_fallback": true, "proxy": true, "upstream_streaming": true, "media_streams": 2, "media_chunk_bytes": 32768, "max_response_bytes": 8 * 1024 * 1024, "max_in_flight": 4, "max_idle_per_origin": 2},
         "http": http,
         "env": {
             "HTTP_PROXY": std::env::var("HTTP_PROXY").ok().map(|p| redact_proxy(&p)),
@@ -372,17 +378,18 @@ fn content_probe_result(result: Result<Value, String>, ms: u64) -> Value {
             json!({"ok": true, "probe": "content_api", "ms": ms})
         }
         Ok(_) => json!({"ok": false, "probe": "content_api", "ms": ms,
-            "error": "内容接口返回了无法识别的数据"}),
+            "error": INVALID_API_RESPONSE, "error_kind": "invalid_api_response"}),
         Err(error) => {
+            let error_kind = crate::playback_log::error_kind(&error);
             let status = error
                 .strip_prefix("HTTP ")
                 .and_then(|s| s.split_whitespace().next())
                 .and_then(|s| s.parse::<u16>().ok())
                 .filter(|code| (100..600).contains(code));
             if let Some(status) = status {
-                json!({"ok": false, "probe": "content_api", "ms": ms, "status": status})
+                json!({"ok": false, "probe": "content_api", "ms": ms, "status": status, "error_kind": error_kind})
             } else {
-                json!({"ok": false, "probe": "content_api", "ms": ms, "error": error})
+                json!({"ok": false, "probe": "content_api", "ms": ms, "error": error, "error_kind": error_kind})
             }
         }
     }
@@ -408,14 +415,48 @@ fn retryable_error(error: &str) -> bool {
             | "private_address_denied"
             | "target_policy_denied"
             | "redirect_error"
+            | "empty_api_response"
+            | "html_api_response"
+            | "invalid_api_response"
     )
 }
 
-fn decode_edge_response(value: Value) -> Result<Value, String> {
-    if value.is_null() {
-        return Ok(Value::Null);
+fn response_kind(content_type: &str) -> &'static str {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if mime == "application/json" || mime.ends_with("+json") {
+        "json"
+    } else if matches!(mime.as_str(), "text/html" | "application/xhtml+xml") {
+        "html"
+    } else {
+        "other"
     }
-    if value.get("status").and_then(Value::as_i64) == Some(1) {
+}
+
+/// Do not expose upstream documents or parser snippets in errors. A landing page
+/// is a protocol mismatch, even when it has HTTP 200 or a misleading MIME type.
+fn parse_edge_payload(content_type: &str, bytes: &[u8]) -> Result<Value, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| INVALID_API_RESPONSE)?;
+    let text = text.trim_start_matches('\u{feff}').trim();
+    if text.is_empty() {
+        return Err(EMPTY_API_RESPONSE.into());
+    }
+    if response_kind(content_type) == "html" || text.starts_with('<') {
+        return Err(HTML_API_RESPONSE.into());
+    }
+    nextjson::from_str(text).map_err(|_| INVALID_API_RESPONSE.into())
+}
+
+fn decode_edge_response(value: Value) -> Result<Value, String> {
+    let status = value
+        .get("status")
+        .and_then(Value::as_i64)
+        .ok_or(INVALID_API_RESPONSE)?;
+    if status == 1 {
         return Ok(value.get("data").cloned().unwrap_or(Value::Null));
     }
     let message = value
@@ -560,9 +601,9 @@ pub async fn edge(
             let mut status_code = None;
             let mut headers_ms = None;
             let mut target_host = line_host.clone();
-            let mut response_kind = "unknown";
+            let mut response_type = "unknown";
             let mut gateway = "other";
-            let result = async {
+            let result = tokio::time::timeout(EDGE_ATTEMPT_TIMEOUT, async {
                 let mut next = network_policy::parse_target(&url)?;
                 for hop in 0..=5 {
                     let (target, client) = client_for(next.as_str()).await?;
@@ -581,7 +622,8 @@ pub async fn edge(
                     status_code = Some(status.as_u16());
                     headers_ms = Some(started.elapsed().as_millis() as u64);
                     let ctype = resp.headers().get(crate::transport::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
-                    response_kind = if ctype.contains("json") { "json" } else if ctype.contains("html") { "html" } else { "other" };
+                    response_type = response_kind(ctype);
+                    let ctype = ctype.to_owned();
                     gateway = if resp.headers().contains_key("x-amz-cf-id") { "cloudfront" } else if resp.headers().contains_key("cf-ray") { "cloudflare" } else { "other" };
                     if status.is_redirection() {
                         if hop == 5 {
@@ -595,25 +637,17 @@ pub async fn edge(
                         next = edge_redirect_target(&target, status.as_u16(), location, guest_get)?;
                         continue;
                     }
-                    let bytes = read_limited(resp, 8 * 1024 * 1024).await?;
-                    let text = String::from_utf8(bytes).map_err(|_| "接口响应不是 UTF-8")?;
                     if status.as_u16() == 401 || status.as_u16() == 403 {
                         return Err("401".to_string());
                     }
                     if !status.is_success() {
-                        return Err(format!(
-                            "HTTP {status}: {}",
-                            text.chars().take(160).collect::<String>()
-                        ));
+                        return Err(format!("HTTP {status}"));
                     }
-                    if text.trim().is_empty() {
-                        return Ok(Value::Null);
-                    }
-                    return nextjson::from_str::<Value>(&text)
-                        .map_err(|e| format!("{e}: {}", text.chars().take(160).collect::<String>()));
+                    let bytes = read_limited(resp, 8 * 1024 * 1024).await?;
+                    return parse_edge_payload(&ctype, &bytes);
                 }
                 Err("重定向次数超过限制".into())
-            }.await;
+            }).await.unwrap_or_else(|_| Err("内容接口请求超时".into()));
             let business_status = result.as_ref().ok().and_then(|v: &Value| v.get("status")).and_then(Value::as_i64);
             // Decode before retry/logging: transport success is not business success.
             let result = result.and_then(decode_edge_response);
@@ -621,7 +655,7 @@ pub async fn edge(
                 "request": request, "attempt": attempt, "operation": operation, "method": method,
                 "line_host": line_host, "target_host": target_host, "status": status_code,
                 "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64,
-                "response_kind": response_kind, "gateway": gateway,
+                "response_kind": response_type, "gateway": gateway,
                 "business_status": business_status,
                 "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e)),
                 "retryable": can_retry && result.as_ref().err().is_some_and(|e| retryable_error(e)),
@@ -705,6 +739,100 @@ pub async fn read_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn blank_and_incompatible_api_responses_fail_once_without_exposing_documents() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for (mime, bytes, kind) in [
+            ("application/json", &b""[..], "empty_api_response"),
+            ("text/html", &b" \r\n\t"[..], "empty_api_response"),
+            (
+                "application/json",
+                "\u{feff} \n".as_bytes(),
+                "empty_api_response",
+            ),
+            (
+                "TEXT/HTML; charset=UTF-8",
+                &b"welcome secret"[..],
+                "html_api_response",
+            ),
+            (
+                "application/xhtml+xml",
+                &b"<html>secret</html>"[..],
+                "html_api_response",
+            ),
+            (
+                "application/json",
+                &b"<html>secret</html>"[..],
+                "html_api_response",
+            ),
+            (
+                "",
+                &b"<!doctype html><title>secret</title>"[..],
+                "html_api_response",
+            ),
+            (
+                "application/json",
+                &b"{\"secret\":"[..],
+                "invalid_api_response",
+            ),
+            ("application/json", &b"\xff"[..], "invalid_api_response"),
+            ("application/json", &b"null"[..], "invalid_api_response"),
+            ("application/json", &b"[]"[..], "invalid_api_response"),
+            (
+                "application/json",
+                &b"{\"message\":\"welcome secret\"}"[..],
+                "invalid_api_response",
+            ),
+            (
+                "application/json",
+                &b"{\"status\":true}"[..],
+                "invalid_api_response",
+            ),
+        ] {
+            let calls = AtomicUsize::new(0);
+            let result = with_retry(true, || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                parse_edge_payload(mime, bytes).and_then(decode_edge_response)
+            })
+            .await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{mime}");
+            let report = content_probe_result(result, 7);
+            assert_eq!(report["ok"], json!(false));
+            assert_eq!(report["error_kind"], json!(kind));
+            assert!(!report.to_string().contains("secret"));
+            assert!(!report.to_string().contains("<html>"));
+        }
+    }
+
+    #[test]
+    fn valid_envelopes_preserve_empty_lists_and_bodyless_business_success() {
+        let payload = "\u{feff} {\"status\":1,\"data\":{\"items\":[]}}\r\n";
+        for mime in [
+            "application/json",
+            "Application/JSON; charset=utf-8",
+            "application/vendor+json",
+            "",
+            "text/plain",
+        ] {
+            let data = parse_edge_payload(mime, payload.as_bytes())
+                .and_then(decode_edge_response)
+                .unwrap();
+            assert_eq!(content_probe_result(Ok(data), 7)["ok"], json!(true));
+        }
+        assert_eq!(
+            decode_edge_response(json!({"status":1})).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            content_probe_result(Ok(Value::Null), 7)["error_kind"],
+            json!("invalid_api_response")
+        );
+        assert_eq!(
+            content_probe_result(Err("内容接口检测超时".into()), 7)["error_kind"],
+            json!("timeout")
+        );
+    }
 
     #[tokio::test]
     async fn business_failures_retry_only_transient_reads_and_remain_bounded() {

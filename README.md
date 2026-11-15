@@ -1,56 +1,77 @@
-# Hedone
+<p align="center"><img src="assets/brand.png" width="88" alt="Hedone 图标"></p>
 
-Flutter + Rust 黄果客户端。Android、iOS、Windows、macOS、Linux 共用 Flutter 界面与 Rust 核心；浏览器使用同源部署的 Rust 服务。
+<h1 align="center">Hedone</h1>
+<p align="center">轻盈的界面，扎实的播放链路。</p>
+<p align="center">简体中文 · <a href="README.en.md">English</a></p>
 
-**NONCOMMERCIAL — 仅限非商业用途。** 当前代码采用 [PolyForm Noncommercial 1.0.0](LICENSE)。禁止销售、广告变现、卡密、VIP、付费解锁，以及作为收费产品或服务的一部分使用；授权范围以许可证全文为准。维护者不提供商业授权，不接受广告、推广或商务合作。
+Hedone 是基于 Flutter 与 Rust 的黄果客户端。浏览、搜索、收藏、续播和剧集切换共用一套界面与媒体管线，支持 Android、iOS、Windows、macOS、Linux；Web 由同源 Rust 服务提供。
 
-## 实现
+代码采用 [PolyForm Noncommercial 1.0.0](LICENSE)，**仅限非商业用途**。不接受广告、付费解锁、销售或商业集成；授权范围以许可证全文为准。第三方内容与依赖保留各自权利。
 
-- 原生端通过 `flutter_rust_bridge 2.13.0` 调用 Rust，Native Assets 负责构建与打包，不需要手工复制动态库。
-- 界面采用 Material 3 Expressive、Google Sans、Google Sans Code 与 Noto Sans SC。窄屏底部导航，宽屏导航栏；卡片容器转场、统一页面动效、系统减少动态效果和后台动画停用贯穿应用。
-- 列表、分类、榜单、搜索、详情、剧集、帖子、评论和账号操作接入真实 edge 协议。播放器支持 HLS、拖动、倍速、续播和切集；没有演示数据或伪造接口成功状态。
-- 发现页提供沉浸观看入口，同一部剧内上下滑动切集。页面停稳才切换媒体，复用一个播放器；选集按需构建，临近片尾只预取下一集地址。
-- 会话、网络策略、封面解密、HLS 重写和有界媒体缓存集中在 Rust。原生凭据写入系统安全存储；Web 凭据只保留在服务进程中。
-- DNS 使用 RecurseX 0.2.6：自动模式保留 VPN FakeIP，普通域名优先使用经过 Courierust 1.1.2 验证的 DoH；不可用时才回退到安全的系统答案。NextJson 0.1.5 读取配置，RustBinary 0.1.10 支撑有界缓存快照。解析版本记录在 Cargo.lock 中。
+## 看看实际界面
 
-`material_3_expressive` 是第三方组件实现，不冒称 Flutter 官方组件。Aurora 是应用的统一动效架构，使用 Flutter 自身的调度与渲染能力；仓库没有自研或修改 Flutter 渲染引擎。
+![Hedone 设置界面](docs/screenshots/settings.png)
 
-业务 JSON 使用 NextJson，UTC 格式化使用 tzcraft。内容传输使用正式发布的 Reqwest / Rustls，保留地址校验、来源隔离和有界连接复用；代理按配置使用。DNS 使用 RecurseX。镜像从发布页自动发现，缓存最多保留七天；凭据只发往固定可信来源。依赖职责和实际限制见[依赖边界](docs/dependencies.md)。
+![Hedone 播放 Big Buck Bunny](docs/screenshots/playback.png)
 
-“猜你喜欢”从随机探索开始，根据近期观看和搜索逐渐调整，保留探索位置与多样性。画像在本机按线路隔离，设置中可重置；候选召回会向当前线路发送单个近期关键词。权重与预算见[推荐设计](docs/recommendations.md)。
+以上是 Windows 上运行项目代码的实际截图。播放画面来自 Blender Foundation 的公开短片 *Big Buck Bunny*，不含成人内容；没有生成海报、拼接播放器或伪造片库数据。短片只用于文档展示，不作为黄果片库内容。截图复现步骤与素材署名见[截图说明](docs/screenshots/README.md)。
+
+## 能做什么
+
+- 浏览分类、榜单、搜索结果和详情，查看剧集与社区内容；收藏与观看记录按线路隔离。
+- HLS 与普通视频播放、拖动、倍速、静音、续播、沉浸式切集；每个播放页只维护一个播放器。
+- 原生视频统一启用 GPU 渲染和硬件解码自动选择。“播放信息”显示实际解码器，设备不支持时允许软件回退。Web 由浏览器决定硬件加速。
+- Material 3 Expressive、明暗主题、响应式导航、减少动态效果，以及随包提供的中英文字体。
+- Rust 集中处理认证、DNS、TLS、图片解密、HLS 改写与有界流式传输；原生凭据使用系统安全存储。
+- 固定线路与官方发布页镜像、内容 API 探测、网络自检和可选诊断日志。
+
+应用只播放媒体，没有视频导出或转码流程，因此没有编码器。“请求硬件解码”并不意味着所有设备、格式和浏览器都支持 GPU 解码。
+
+## 数据源与网络
+
+当前实现的是黄果 edge 协议。51 吃瓜和海角没有实现可验证的适配器，不将一个站点的域名替换成另一个站点来冒充接入成功。
+
+原生端可在“设置 → 数据线路”检测并选择可用线路。探测检查内容接口，首页能打开不等于能播放。镜像只供游客浏览，不能接收账号密码或令牌。Web 线路由服务管理员配置。
+
+发布页打不开时，可通过“手动输入线路”填入从官方取得的最新 HTTPS 镜像，检测成功后再使用。本次已验证的临时镜像与测试条件见[验证说明](docs/verification.md#黄果可达性)，地址可能随时失效。
+
+默认 DNS 使用 RecurseX 0.2.6，DoH 通过 Courierust 1.1.3 验证；内容传输使用 Reqwest 0.13.5 / Rustls 0.23。保留完整证书验证、逐跳目标校验、DNS 地址固定及凭据隔离。DNS 可以改善解析，不能解决 IP/SNI 阻断或上游停服；项目不承诺中国大陆全网免代理可用。本次直连结果记录在[验证说明](docs/verification.md)。
 
 ## 开发
 
-环境：Flutter **3.47.9** / Dart **3.13.7**、Rust **1.99.1**，以及目标平台 SDK。锁文件必须保留。
+当前工程工具链：Flutter 3.47.9 / Dart 3.13.7、Rust 1.99.1，以及目标平台 SDK。
 
 ```sh
 flutter pub get --enforce-lockfile
 flutter run -d windows
 ```
 
-其他原生平台使用对应 Flutter device ID。Web 必须由 Rust 服务同源提供。完整命令、签名和环境变量见[构建与部署](docs/deployment.md)。
+原生 Rust 库通过 Flutter Native Assets 构建和打包。其他平台使用对应 device ID；Windows、Linux 和 Apple 平台需要各自宿主环境。Android 签名、Web 部署及网络配置见[构建与部署](docs/deployment.md)。
 
-原有固定线路可能因上游调整而不可用。原生端在错误页选择“更换数据线路”，可用“自动选择可用线路”检测真实视频列表并返回重试；优先保留恢复正常的当前线路，其次选择固定线路和发布页镜像。镜像只用于游客浏览，不接收账号密码或令牌，已登录时换线仍需确认退出。Web 管理员在数据目录配置线路。不会把临时镜像硬编码成永久登录站点。
+```powershell
+# 格式、静态检查、Flutter/Rust 回归与 Clippy
+./tool/check.ps1
 
-## 目录
+# 从唯一 SVG 源文件重建各平台图标
+./tool/generate-icons.ps1
+```
+
+Linux/macOS 可运行 `bash tool/check.sh`。提交时保留 `pubspec.lock` 和 `rust/Cargo.lock`。
+
+## 工程结构
 
 | 路径 | 职责 |
 | --- | --- |
-| `lib/core/` | 应用状态、分页、播放生命周期、存储接口 |
-| `lib/data/` | 业务模型、仓库与原生/Web 传输 |
-| `lib/features/`、`lib/ui/` | 页面、Material 3 Expressive 与统一动效 |
-| `lib/src/rust/` | FRB 生成绑定 |
-| `rust/src/` | 业务服务、会话、网络与媒体网关 |
-| `hook/` | 原生资产构建 |
-| 各平台目录 | Flutter 必需的平台宿主 |
-| `test/`、`integration_test/` | 状态、布局与真实桥接回归 |
+| `lib/core/` | 状态、分页、存储与播放生命周期 |
+| `lib/data/` | 模型、仓库和原生/Web 传输 |
+| `lib/features/`、`lib/ui/` | 页面、主题与共享交互 |
+| `rust/src/` | 业务协议、会话、网络策略与媒体网关 |
+| `hook/` | 原生资源构建 |
+| `assets/brand.svg` | 品牌图形的唯一源文件 |
+| `test/`、`integration_test/` | 单元、布局与原生链路回归 |
 
-旧的 Tauri、React、Node 包管理与前端构建链已移除。平台宿主中的 Kotlin、Swift、C++ 和 Web 引导文件属于 Flutter 工程要求，不承载另一套业务实现。
+[架构](docs/architecture.md) · [依赖边界](docs/dependencies.md) · [安全设计](docs/security.md) · [性能](docs/performance.md) · [推荐策略](docs/recommendations.md) · [验证记录](docs/verification.md)
 
-## 验证与维护
+欢迎带复现步骤、环境信息与脱敏日志的问题报告和技术 PR。维护者不运营内容服务，与上游站点没有官方隶属关系，也不承诺第三方接口持续可用。请勿在 issue 中提交密码、令牌或带签名的媒体地址。
 
-执行 `tool/check.ps1` 或 `bash tool/check.sh`。跨平台 CI 配置覆盖五个原生目标与 Web，但配置存在不代表这些目标已经在当前机器上通过。实际验证记录、联网回归方法和限制见[验证说明](docs/verification.md)。架构取舍见[架构](docs/architecture.md)，内存预算与实机验收方法见[性能设计](docs/performance.md)，信任边界见[安全设计](docs/security.md)。
-
-社区问题和技术 PR 均可提交；维护者按时间与精力处理，不承诺第三方接口持续可用。项目不运营内容托管服务，与上游站点没有官方隶属或背书关系；软件许可证不授予第三方内容权利。正式权益通知可通过仓库 Issues 或平台渠道提出，维护者核实后在可控制的仓库范围内配合处理。
-
-历史版本 v1.0.1 及更早版本曾以 MIT 许可证发布，已取得的相应授权不因后续换证而撤回；自 v1.1.0 起的新版本适用 PolyForm Noncommercial 1.0.0。字体和依赖保留各自许可证，不以本项目许可覆盖第三方权利。
+历史 v1.0.1 及更早版本曾以 MIT 发布，已取得的相应授权不被后续换证撤回；当前代码以仓库 [LICENSE](LICENSE) 为准。字体、依赖和文档中的影片截图不受本项目许可证替代。

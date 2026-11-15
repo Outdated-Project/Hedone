@@ -1,4 +1,5 @@
 import 'design.dart';
+import 'app_theme.dart';
 
 /// Rotation changes geometry, never the parent of the video or episode pager.
 /// Keeping these elements mounted preserves texture and inherited state.
@@ -24,11 +25,19 @@ class CinemaLayout extends StatelessWidget {
           ),
           LayoutId(
             id: _Slot.controls,
-            child: ColoredBox(
-              color: overlay
-                  ? Colors.black.withValues(alpha: .8)
-                  : Colors.transparent,
-              child: SingleChildScrollView(child: controls),
+            child: Theme(
+              data: overlay ? AppTheme.dark : Theme.of(context),
+              child: Builder(
+                builder: (context) => AppTheme.scope(
+                  context,
+                  ColoredBox(
+                    color: overlay
+                        ? Colors.black.withValues(alpha: .8)
+                        : Colors.transparent,
+                    child: SingleChildScrollView(child: controls),
+                  ),
+                ),
+              ),
             ),
           ),
         ],

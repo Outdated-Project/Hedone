@@ -128,6 +128,27 @@ void main() {
       expect(errorMessage(error), contains('更换数据线路'));
     }
   });
+  test('API response errors and timeouts offer distinct recovery guidance', () {
+    for (final entry in {
+      '内容接口返回空响应': '空白数据',
+      '内容接口返回网页而非接口数据': '未提供所需的内容接口',
+      '内容接口响应格式无效': '不符合当前接口格式',
+    }.entries) {
+      expect(
+        errorMessage('AnyhowException: ${entry.key}'),
+        contains(entry.value),
+      );
+    }
+    for (final error in [
+      '内容接口请求超时',
+      '内容接口检测超时',
+      'ClientException: connection timed out',
+      'TimeoutException: request',
+    ]) {
+      expect(errorMessage(error), contains('连接超时'));
+      expect(errorMessage(error), contains('网络自检'));
+    }
+  });
   setUpAll(() async {
     for (final entry in {
       'MaterialIcons': 'fonts/MaterialIcons-Regular.otf',
@@ -168,6 +189,61 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     model.dispose();
   });
+
+  testWidgets(
+    'manual line rejects credentials and switches only after a content probe',
+    (tester) async {
+      final transport = SettingsTransport();
+      final model = AppModel(Repository(transport), MemoryPreferences());
+      await model.initialize();
+      await mount(
+        tester,
+        Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => LinesScreen(model: model),
+                ),
+              ),
+              child: const Text('打开线路'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开线路'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('手动输入线路'));
+      await tester.tap(find.text('手动输入线路'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(EditableText),
+        'https://user:secret@mirror.example',
+      );
+      await tester.tap(find.text('检测并使用'));
+      await tester.pumpAndSettle();
+      expect(transport.calls, isNot(contains('line_probe')));
+      expect(find.textContaining('请输入纯 HTTPS'), findsOneWidget);
+      await tester.enterText(
+        find.byType(EditableText),
+        'https://manual.example/',
+      );
+      await tester.tap(find.text('检测并使用'));
+      await tester.pumpAndSettle();
+      expect(transport.calls, contains('line_probe'));
+      expect(transport.calls, isNot(contains('line_set')));
+      expect(model.base, second);
+      transport.probe.complete([
+        {'url': 'https://manual.example', 'ok': true, 'ms': 20},
+      ]);
+      await tester.pumpAndSettle();
+      expect(model.base, 'https://manual.example');
+      expect(find.byType(LinesScreen), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      model.dispose();
+    },
+  );
 
   testWidgets('automatic recovery selects a verified line and returns', (
     tester,
@@ -307,6 +383,38 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(SelectableText), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('API response failures are distinct from TLS failures', (
+    tester,
+  ) async {
+    final transport = SettingsTransport();
+    for (final entry in {
+      'empty_api_response': '内容接口返回空响应',
+      'html_api_response': '内容接口返回网页而非接口数据',
+      'invalid_api_response': '内容接口响应格式无效',
+      'upstream_business_error': '上游接口失败：获取视频列表失败',
+    }.entries) {
+      transport.report['http'] = {
+        'probe': 'content_api',
+        'ok': false,
+        'error_kind': entry.key,
+        'error': entry.value,
+        'ms': 80,
+      };
+      await mount(
+        tester,
+        NetworkDiagnosticsScreen(
+          key: ValueKey(entry.key),
+          repository: Repository(transport),
+        ),
+      );
+      expect(find.text('内容接口异常'), findsOneWidget);
+      expect(find.text('安全连接失败'), findsNothing);
+      expect(find.text('连接正常'), findsNothing);
+      expect(find.text(errorMessage(entry.value)), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
   });
 
   testWidgets('technical details expand and collapse with motion enabled', (

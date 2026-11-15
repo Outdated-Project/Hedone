@@ -8,6 +8,7 @@ rust/target/
 .tools/
 .hedone-data/
 coverage/
+docs/screenshots/capture-error.*
 .idea/
 *.iml
 *.log

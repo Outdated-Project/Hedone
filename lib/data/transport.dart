@@ -22,6 +22,15 @@ String errorMessage(Object error) {
   if (text == '获取视频列表失败' || text == '上游接口失败：获取视频列表失败') {
     return '已连接到服务器，但当前线路暂时无法提供视频列表。请重试，或更换数据线路并检测连接。';
   }
+  if (text == '内容接口返回空响应') {
+    return '服务器已响应，但内容接口返回空白数据。请检查来源接口或更换数据线路。';
+  }
+  if (text == '内容接口返回网页而非接口数据') {
+    return '服务器返回了网页，当前地址未提供所需的内容接口。请检查来源接口或更换数据线路。';
+  }
+  if (text == '内容接口响应格式无效') {
+    return '服务器返回的数据不符合当前接口格式。请检查来源适配或更换数据线路。';
+  }
   if (text.contains('no trusted root found') ||
       text.contains('invalid peer certificate') ||
       text.contains('certificate verify') ||
@@ -35,13 +44,14 @@ String errorMessage(Object error) {
   if (status != null) {
     return '服务器返回 HTTP $status，请稍后重试或更换数据线路。';
   }
+  final lower = text.toLowerCase();
+  if (text.contains('超时') ||
+      lower.contains('timeout') ||
+      lower.contains('timed out')) {
+    return '连接超时，请检查网络或更换数据线路；也可以在设置中运行网络自检。';
+  }
   if (text.contains('SocketException') || text.contains('ClientException')) {
     return '网络连接失败，请检查网络或服务地址';
-  }
-  if (text.contains('TimeoutException') ||
-      text.contains('timed out') ||
-      text.contains('operation timeout')) {
-    return '连接超时，请检查网络或更换数据线路；也可以在设置中运行网络自检。';
   }
   return text.length > 220 ? '${text.substring(0, 220)}…' : text;
 }

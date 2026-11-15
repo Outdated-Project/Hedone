@@ -1,5 +1,46 @@
 # 验证
 
+## 2026-11-15：空响应识别与请求超时边界
+
+通用内容请求现在把 HTTP 200 的空正文、HTML 欢迎页和不符合协议的 JSON 分别报告为接口异常，不再把空正文当作成功，也不对这些协议错误自动重试。保留合法空列表，以及带成功业务信封但不返回数据的操作。解析失败与 HTTP 错误不再附带上游正文片段。
+
+每次业务请求尝试的 DNS、客户端排队、重定向和响应读取共享 20 秒预算；仅临时故障最多尝试三次，原有线路探测的 8 秒外层预算保留。网络自检区分内容接口异常与安全连接失败，中文超时也显示恢复建议。
+
+验证：Rust 离线测试 68 项通过、10 项联网测试忽略；全 targets/server Clippy（`-D warnings`）、Rust 格式检查通过。Flutter 设置与网络自检回归 17 项通过，改动文件 Dart 静态分析及格式检查通过。夹具覆盖空正文、HTML、错误 MIME、无效 UTF-8/JSON、缺少业务状态、合法空列表和提示分类。
+
+本轮没有实现 51 或海角适配器，也没有进行这两个来源的真实联网验收。仓库缺少海角可复现的接口资料；以上通用修复不能证明该来源恢复访问。仍需要脱敏的状态码、Content-Type、非敏感响应摘要和耗时来定位具体故障。
+
+## 2026-11-15：依赖迁移、品牌资源与真实播放
+
+Reqwest 0.13.5 的旧 TLS feature 已迁移为 `rustls-no-provider` 与显式 Rustls/ring 配置；Courierust 1.1.3 在 Cargo.lock 中只解析一次。内容请求仍经过证书、来源、DNS、重定向和响应预算检查。没有关闭 TLS 校验或给动态镜像授予账号权限。
+
+- Rust 离线回归：67 项通过。新增的外网探测按 `#[ignore]` 隔离；测试需要上游真实响应，不以空列表之外的伪造内容填充结果。
+- Flutter 全量回归：79 项通过。新增手动线路入口后另跑设置与全屏相关 22 项，全部通过；覆盖带凭据地址拒绝、接口未通过前不切换以及横屏控制区对比度。
+- `flutter analyze --no-pub`、Rust 格式检查及全 targets/server Clippy（`-D warnings`）通过。
+- Windows 原生截图入口构建、运行通过，正式入口 `flutter build windows --release` 通过；Web release 构建通过。Web 构建仍有依赖引用 CupertinoIcons 而未打包该字体的提示，当前应用使用 Material 图标。本轮未运行 Apple/Linux 原生构建，也未验证所有 Android 芯片的解码能力。
+- Courierust 1.1.3 / RecurseX 的真实 DoH 请求通过。公开 H.264 样片的真实 Rust 流读取通过，随后经正式版媒体网关、PlaybackSession 和 PostVideoScreen 完成播放、跳转与暂停。
+- 本机 mpv 报告 `hwdec-current=d3d11va-copy`，视频格式 `h264`。这是该 Windows 设备、该样片的实测结果，不代表所有平台/编码都能硬解。原始结果见 [capture.json](screenshots/capture.json)。
+
+品牌 SVG 是图标唯一源文件。已生成 Windows 多尺寸 ICO、Android 常规/自适应/单色资源、iOS 不透明 RGB 图标、macOS 和 Web 图标；Linux 窗口读取随包品牌图。README 使用实际渲染帧，画面为非成人公开短片，来源、署名与复现入口见[截图说明](screenshots/README.md)。
+
+### 黄果可达性
+
+本机设置 `NO_PROXY=*`、清空 `HEDONE_PROXY` 后，两个固定来源的内容接口均在 25 秒后超时，官方发布页连接也超时。通过当前代理取得发布页真实镜像列表后，两组镜像的内容接口探测分别耗时约 16.1 秒和 2.4 秒并成功。
+
+复查 `https://thu.bmikbxhi.cc` 时，测试确认应用代理为空、DNS 结果不含 FakeIP，内容接口约 2.1 秒成功。该地址来自当日官方发布脚本，是临时游客镜像，不写进永久信任表。可在“设置 → 数据线路 → 手动输入线路”输入后检测并使用；域名失效时需重新取得官方新地址。
+
+这些结果只证明本机当时的应用连接路径。`NO_PROXY` 不会关闭系统级 VPN/TUN，测试没有证明所有大陆运营商的原生出口环境，也没有逐一验证镜像的全部视频 CDN。不能据此承诺“大陆全网免代理”。手动入口不绕过 Rust 私网访问检查，只有内容检测成功才自动切换；登录仍限固定可信来源。
+
+```powershell
+$env:NO_PROXY = '*'
+$env:HEDONE_PROXY = ''
+# 可选：测试刚从官方发布页获得的 HTTPS origin；不填则测固定线路。
+$env:HEDONE_TEST_ORIGIN = 'https://thu.bmikbxhi.cc'
+cargo test --manifest-path rust/Cargo.toml --lib live_direct_routes --locked -- --ignored --nocapture
+```
+
+51 吃瓜没有添加聚合/刮削适配；提供的站点包含标注私密泄露的内容。海角入口在网页检查中只有 welcome 空页，本机请求超时，没有可验证的详情与播放协议。两者均未标记为支持。
+
 ## 2026-11-12：列表业务失败与慢 DNS 恢复
 
 截图中的“获取视频列表失败”来自上游业务响应。旧版日志复现 HTTP 200 / `business_status=0`，但 `error_kind=null`、`retryable=false`：业务信封在重试与日志之外解码，漏掉了失败。现在先解码，再对已知的临时列表失败最多尝试三次；登录、参数错误和非幂等写入不因此重放。日志将其标为 `upstream_business_error`，界面说明服务器已连通但列表不可用。

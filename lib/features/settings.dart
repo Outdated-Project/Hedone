@@ -78,8 +78,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     for (final entry in {
       'RecurseX 0.2.6': 'recurse-x',
-      'Courierust 1.1.2': 'courierust',
-      'Reqwest 0.12': 'reqwest-mit',
+      'Courierust 1.1.3': 'courierust',
+      'Reqwest 0.13.5': 'reqwest-mit',
       'Rustls 0.23': 'rustls-isc',
       'NextJson 0.1.5 / RustBinary 0.1.10': 'apache-2.0',
       'Mozilla CA certificate bundle': 'mozilla-mpl-2.0',
@@ -100,7 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context,
       dialog: M3EDialog(
         title: available ? '发现新版本 ${result['latest']}' : '当前没有新版本',
-        content: Text(available ? plainText(result['notes']) : '当前版本 1.0.1'),
+        content: Text(available ? plainText(result['notes']) : '当前版本 1.0.2'),
         actions: [
           M3EButton(
             onPressed: () => Navigator.pop(context),
@@ -325,7 +325,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: Column(
                           children: [
                             M3EListItem(
-                              headline: 'Hedone 1.0.1',
+                              headline: 'Hedone 1.0.2',
                               supportingText:
                                   'Flutter × Rust · Material 3 Expressive',
                               leading: ClipRRect(

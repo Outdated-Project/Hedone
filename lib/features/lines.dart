@@ -22,6 +22,7 @@ class _LinesScreenState extends State<LinesScreen> {
   bool _confirming = false, _discovering = false, _probing = false;
   String? _discoveryError;
   bool _cached = false;
+  Json? _manualLine;
   int _probeCount = 0, _probeTotal = 0;
 
   List<Json> _validMirrors(dynamic value) => objects(value)
@@ -86,6 +87,57 @@ class _LinesScreenState extends State<LinesScreen> {
     } finally {
       if (mounted) setState(() => _selecting = null);
     }
+  }
+
+  Future<void> _enterLine() async {
+    var address = '';
+    String? error;
+    final origin = await M3EDialog.show<String>(
+      context,
+      dialog: StatefulBuilder(
+        builder: (context, update) {
+          void submit() {
+            final uri = Uri.tryParse(address.trim());
+            if (uri == null ||
+                uri.scheme != 'https' ||
+                uri.host.isEmpty ||
+                uri.userInfo.isNotEmpty ||
+                uri.hasQuery ||
+                uri.hasFragment ||
+                (uri.path.isNotEmpty && uri.path != '/')) {
+              update(() => error = '请输入纯 HTTPS 站点地址，不含账号、路径或参数');
+              return;
+            }
+            Navigator.of(context, rootNavigator: true).pop(uri.origin);
+          }
+
+          return M3EDialog(
+            title: '手动输入线路',
+            content: M3ETextField(
+              label: 'HTTPS 站点地址',
+              placeholder: '从官方发布页获得的最新镜像',
+              maxLength: 253,
+              errorText: error,
+              onChanged: (value) => address = value,
+              onSubmitted: (_) => submit(),
+            ),
+            actions: [
+              M3EButton(
+                onPressed: () =>
+                    Navigator.of(context, rootNavigator: true).pop(),
+                label: const Text('取消'),
+                style: M3EButtonStyle.text,
+              ),
+              M3EButton(onPressed: submit, label: const Text('检测并使用')),
+            ],
+          );
+        },
+      ),
+    );
+    if (!mounted || origin == null) return;
+    final line = <String, dynamic>{'name': '手动线路', 'url': origin};
+    setState(() => _manualLine = line);
+    await _probe([line], selectAvailable: true);
   }
 
   Future<void> _discover() async {
@@ -271,6 +323,8 @@ class _LinesScreenState extends State<LinesScreen> {
           final fixed = objects(snapshot.data!['fixed']);
           final unique = <String, Json>{
             for (final row in [...fixed, ..._mirrors]) string(row['url']): row,
+            if (_manualLine case final Json manual)
+              string(manual['url']): manual,
             if (widget.model.base.isNotEmpty &&
                 ![
                   ...fixed,
@@ -324,6 +378,14 @@ class _LinesScreenState extends State<LinesScreen> {
                           _probing ? '检测中 $_probeCount/$_probeTotal' : '检测连接',
                         ),
                         icon: const Icon(Icons.network_check_rounded),
+                        style: M3EButtonStyle.tonal,
+                      ),
+                      M3EButton(
+                        onPressed: _probing || _selecting != null
+                            ? null
+                            : _enterLine,
+                        label: const Text('手动输入线路'),
+                        icon: const Icon(Icons.link_rounded),
                         style: M3EButtonStyle.tonal,
                       ),
                     ],
