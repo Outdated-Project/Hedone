@@ -37,8 +37,6 @@ class _BrowseScreenState extends State<BrowseScreen> {
     'personal': '猜你喜欢',
     'ai-duanju': '短剧',
     'ai-manju': '漫剧',
-    'ai-huanlian': '换脸',
-    'ai-mogai': '魔改',
     'hot': '热播榜',
     'recommend': '推荐榜',
     'potential': '潜力榜',

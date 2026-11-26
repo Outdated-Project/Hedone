@@ -7,7 +7,7 @@
 | 匹配方式 | 域名 / 后缀 | 用途及证据 |
 | --- | --- | --- |
 | 后缀 | `huangguoai.com` | 固定 API 线路 1，正文相对 URL 的基址；`rust/src/net.rs`、`lib/ui/rich_content.dart` |
-| 后缀 | `huangguoai.ai` | 固定 API 线路 2；`rust/src/lines.rs` |
+| 后缀 | `huangguoai.ai` | 黄果地址发布页（旧版固定线路 2） |
 | 精确 | `huangguoai.pages.dev` | 镜像发布页及其 `publish.js`；`rust/src/lines.rs` |
 | 后缀 | `drleao.cn` | 图片 CDN 样本 `pic.drleao.cn`；`rust/src/media.rs` 联网测试 |
 | 后缀 | `hzjvlo.cn` | 视频 CDN 样本 `yd-lphu-hls.hzjvlo.cn`；`rust/src/media.rs` 联网测试 |

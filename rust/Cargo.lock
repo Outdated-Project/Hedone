@@ -571,7 +571,6 @@ version = "1.0.2"
 dependencies = [
  "aes",
  "axum",
- "base64",
  "courierust",
  "flutter_rust_bridge",
  "futures-util",

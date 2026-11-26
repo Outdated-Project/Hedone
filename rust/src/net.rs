@@ -1,9 +1,8 @@
 //! Validated upstream transport: DNS pinning, redirect policy and bounded reads.
 use crate::network_policy;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
 use nextjson::{Value, json};
 use once_cell::sync::Lazy;
+use reqwest::Method;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13,7 +12,7 @@ use std::time::{Duration, Instant};
 /// 默认上游（固定线路 1）。
 pub const DEFAULT_BASE: &str = "https://huangguoai.com";
 
-/// 当前上游基址（不带结尾斜杠）。可在设置里切到固定线路 2 或镜像线路，运行时立即生效。
+/// 当前上游基址（不带结尾斜杠）。可在设置里切换到镜像线路。
 static BASE: Lazy<RwLock<String>> = Lazy::new(|| RwLock::new(DEFAULT_BASE.to_string()));
 /// 线路配置落盘位置（应用数据目录/line.json），由 [`bind_base`] 在启动时绑定。
 static BASE_FILE: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
@@ -40,7 +39,7 @@ pub fn normalize_base(raw: &str) -> Option<String> {
 
 /// 远端发布页只提供游客镜像，不能扩展账号密码的信任范围。
 pub fn trusted_auth_origin(origin: &str) -> bool {
-    matches!(origin, "https://huangguoai.com" | "https://huangguoai.ai")
+    origin == DEFAULT_BASE
 }
 
 /// 启动时读回上次选择的线路（文件不存在 / 内容坏了就保持默认）。
@@ -55,7 +54,12 @@ pub fn bind_base(dir: &std::path::Path) {
             .and_then(normalize_base)
         && let Ok(mut cur) = BASE.write()
     {
-        *cur = next;
+        // The former second fixed route now publishes links rather than serving the API.
+        *cur = if next == crate::lines::ADDRESS_DIRECTORY {
+            DEFAULT_BASE.to_owned()
+        } else {
+            next
+        };
     }
     if let Ok(mut f) = BASE_FILE.write() {
         *f = Some(path);
@@ -66,6 +70,9 @@ pub fn bind_base(dir: &std::path::Path) {
 pub fn set_base(url: &str) -> Result<String, String> {
     let next = normalize_base(url)
         .ok_or_else(|| "线路地址无效（需要纯 HTTPS 站点地址，禁止内网）".to_string())?;
+    if next == crate::lines::ADDRESS_DIRECTORY {
+        return Err("这是地址发布页，请选择固定线路或发布页列出的镜像".into());
+    }
     let previous = base();
     let file = BASE_FILE.read().map_err(|_| "线路配置锁失败")?;
     let path = file.as_ref().ok_or("线路配置尚未初始化")?;
@@ -365,7 +372,13 @@ pub(crate) async fn probe_content(origin: &str, timeout: Duration) -> Value {
     let started = Instant::now();
     let result = tokio::time::timeout(
         timeout,
-        edge(origin, "GET", "/api/videos?page=1&size=24", None, None),
+        api_request(
+            origin,
+            Method::GET,
+            "/api/videos?page=1&size=24",
+            None,
+            None,
+        ),
     )
     .await
     .unwrap_or_else(|_| Err("内容接口检测超时".into()));
@@ -525,23 +538,23 @@ fn edge_operation(path: &str) -> &'static str {
     }
 }
 
-/// 仅无请求体、无凭据的逻辑 GET 可以迁移网关；信封本身仍使用 POST。
+/// Only an anonymous, bodyless GET can follow an upstream redirect.
 fn edge_redirect_target(
     current: &url::Url,
     status: u16,
     location: &str,
     guest_get: bool,
 ) -> Result<url::Url, String> {
-    if !guest_get || !matches!(status, 301..=303) {
+    if !guest_get || !matches!(status, 301..=303 | 307 | 308) {
         return Err("业务接口重定向已拒绝".into());
     }
     network_policy::redirect_target(current, location)
 }
 
-/// 业务请求：走边缘信封。
-pub async fn edge(
+/// Send the operation to its same-origin Huangguo API endpoint.
+pub async fn api_request(
     origin: &str,
-    method: &str,
+    method: Method,
     path: &str,
     body: Option<Value>,
     token: Option<&str>,
@@ -556,23 +569,9 @@ pub async fn edge(
     {
         return Err("镜像线路仅供游客浏览；登录/注册请切换到固定线路".into());
     }
-    let (encoded, ctype) = match &body {
-        Some(v) => (
-            B64.encode(nextjson::to_vec(v).map_err(|e| e.to_string())?),
-            "application/json",
-        ),
-        None => (String::new(), ""),
-    };
-    let envelope = json!({
-        "method": method,
-        "path": path,
-        "body": encoded,
-        "content_type": ctype,
-    });
-
-    let url = format!("{cur}/api/edge/request");
+    let url = format!("{cur}{path}");
     let referer = format!("{cur}/");
-    let token = token.map(|s| s.to_string());
+    let body = body.map(|value| value.to_string());
 
     static NEXT_EDGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let request = NEXT_EDGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -583,37 +582,39 @@ pub async fn edge(
         .to_string();
     let operation = edge_operation(path);
     let mut attempt = 0;
-    let guest_get = method.eq_ignore_ascii_case("GET") && body.is_none() && token.is_none();
+    let guest_get = method == Method::GET && body.is_none() && token.is_none();
     // 取播放地址的 POST 没有副作用，和 GET 一样允许重试
-    let can_retry = (method.eq_ignore_ascii_case("GET") && body.is_none())
-        || (method.eq_ignore_ascii_case("POST") && operation == "play");
+    let can_retry = (method == Method::GET && body.is_none())
+        || (method == Method::POST && operation == "play");
     with_retry(can_retry, || {
         attempt += 1;
         let attempt = attempt;
-        let envelope = envelope.clone();
-        let token = token.clone();
-        let url = url.clone();
-        let referer = referer.clone();
-        let line_host = line_host.clone();
+        let method = &method;
+        let body = body.as_deref();
+        let url = url.as_str();
+        let referer = referer.as_str();
+        let line_host = line_host.as_str();
         async move {
             let started = Instant::now();
-            crate::playback_log::record("api.begin", json!({"request": request, "attempt": attempt, "operation": operation, "method": method, "line_host": line_host}));
+            crate::playback_log::record("api.begin", json!({"request": request, "attempt": attempt, "operation": operation, "method": method.as_str(), "line_host": line_host}));
             let mut status_code = None;
             let mut headers_ms = None;
-            let mut target_host = line_host.clone();
+            let mut target_host = line_host.to_owned();
             let mut response_type = "unknown";
             let mut gateway = "other";
             let result = tokio::time::timeout(EDGE_ATTEMPT_TIMEOUT, async {
-                let mut next = network_policy::parse_target(&url)?;
+                let mut next = network_policy::parse_target(url)?;
                 for hop in 0..=5 {
                     let (target, client) = client_for(next.as_str()).await?;
                     target_host = target.host_str().unwrap_or("").to_string();
                     let mut req = client
-                        .post(target.clone())
+                        .request(target.clone(), method.clone())
                         .header("Accept", "application/json")
-                        .header("Referer", &referer)
-                        .header("content-type", "application/json").body(envelope.to_string());
-                    if let Some(t) = token.as_deref()
+                        .header("Referer", referer);
+                    if let Some(body) = body {
+                        req = req.header("Content-Type", "application/json").body(body.to_owned());
+                    }
+                    if let Some(t) = token
                         && !t.is_empty() {
                             req = req.header("Authorization", format!("Bearer {t}"));
                         }
@@ -652,7 +653,7 @@ pub async fn edge(
             // Decode before retry/logging: transport success is not business success.
             let result = result.and_then(decode_edge_response);
             crate::playback_log::record("api.end", json!({
-                "request": request, "attempt": attempt, "operation": operation, "method": method,
+                "request": request, "attempt": attempt, "operation": operation, "method": method.as_str(),
                 "line_host": line_host, "target_host": target_host, "status": status_code,
                 "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64,
                 "response_kind": response_type, "gateway": gateway,
@@ -1009,16 +1010,11 @@ mod tests {
 
     #[test]
     fn edge_redirects_only_replay_anonymous_reads() {
-        let current = url::Url::parse("https://huangguoai.ai/api/edge/request").unwrap();
+        let current = url::Url::parse("https://mirror.example/api/videos").unwrap();
         assert_eq!(
-            edge_redirect_target(
-                &current,
-                301,
-                "https://huangguoai.com/api/edge/request",
-                true
-            )
-            .unwrap()
-            .host_str(),
+            edge_redirect_target(&current, 301, "https://huangguoai.com/api/videos", true)
+                .unwrap()
+                .host_str(),
             Some("huangguoai.com")
         );
         assert!(edge_redirect_target(&current, 302, "/next", true).is_ok());
@@ -1026,7 +1022,7 @@ mod tests {
             assert!(edge_redirect_target(&current, status, "/next", false).is_err());
         }
         for status in [307, 308] {
-            assert!(edge_redirect_target(&current, status, "/next", true).is_err());
+            assert!(edge_redirect_target(&current, status, "/next", true).is_ok());
         }
         assert!(edge_redirect_target(&current, 301, "http://example.com/", true).is_err());
         assert!(edge_redirect_target(&current, 301, "https://127.0.0.1/", true).is_err());
@@ -1064,7 +1060,7 @@ mod tests {
             assert_eq!(normalize_base(raw), None, "{raw}");
         }
         assert!(trusted_auth_origin(DEFAULT_BASE));
-        assert!(trusted_auth_origin("https://huangguoai.ai"));
+        assert!(!trusted_auth_origin(crate::lines::ADDRESS_DIRECTORY));
         assert!(!trusted_auth_origin("https://mirror.example"));
         assert!(!trusted_auth_origin("https://huangguoai.com.evil.example"));
     }
@@ -1084,7 +1080,7 @@ mod tests {
             ),
             ("/api/videos", None, Some("secret-token")),
         ] {
-            let err = edge("https://mirror.invalid", "POST", path, body, token)
+            let err = api_request("https://mirror.invalid", Method::POST, path, body, token)
                 .await
                 .unwrap_err();
             assert!(err.contains("镜像线路仅供游客浏览"));

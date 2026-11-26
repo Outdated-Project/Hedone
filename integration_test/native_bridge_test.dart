@@ -32,14 +32,17 @@ void main() {
     final dir = await Directory.systemTemp.createTemp('hedone-bridge-');
     try {
       await initializeNativeRuntime();
+      await File('${dir.path}/line.json').writeAsString(
+        jsonEncode({'base': 'https://huangguoai.ai'}),
+      );
       final boot = jsonDecode(
         await bridge.initialize(dataDir: dir.path),
       ) as Map<String, dynamic>;
       expect(boot['base'], 'https://huangguoai.com');
       expect(boot['logged_in'], false);
-      // Fixed line selection is local and must work without a network probe.
+      // Line selection is local and must work without a network probe.
       for (final origin in [
-        'https://huangguoai.ai',
+        'https://mirror.example',
         'https://huangguoai.com',
       ]) {
         final selected = jsonDecode(
@@ -52,7 +55,9 @@ void main() {
           await bridge.request(payload: '{"op":"line_state"}'),
         );
         expect(state['base'], origin);
-        expect((state['fixed'] as List).length, 2);
+        expect((state['fixed'] as List).map((line) => line['url']), [
+          'https://huangguoai.com',
+        ]);
       }
       await expectLater(
         bridge.mediaUrl(url: 'http://127.0.0.1/private', image: true),

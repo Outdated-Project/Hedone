@@ -96,10 +96,7 @@ impl Client {
     pub fn get(&self, url: impl ToString) -> Request {
         self.request(url, reqwest::Method::GET)
     }
-    pub fn post(&self, url: impl ToString) -> Request {
-        self.request(url, reqwest::Method::POST)
-    }
-    fn request(&self, url: impl ToString, method: reqwest::Method) -> Request {
+    pub(crate) fn request(&self, url: impl ToString, method: reqwest::Method) -> Request {
         let url = url.to_string();
         Request {
             origin: self.origin.clone(),
@@ -568,7 +565,7 @@ mod tests {
         crate::net::read_limited(response, 16).await.unwrap();
         assert!(
             client
-                .post(&origin)
+                .request(&origin, reqwest::Method::POST)
                 .body("change".into())
                 .timeout(Duration::from_secs(3))
                 .send()

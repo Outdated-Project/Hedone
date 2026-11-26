@@ -29,11 +29,11 @@ The app plays media; it has no export or transcoding pipeline and therefore no v
 
 ## Sources and connectivity
 
-The implemented provider uses Huangguo's edge protocol. There are no verified adapters for 51 Chigua or Haijiao. Changing a hostname does not implement another provider's API.
+Hedone uses Huangguo's JSON API on the fixed origin `huangguoai.com` and temporary mirrors from the publication page. Adapters for 51 Chigua and Haijiao remain unverified.
 
 Native users can probe and select routes in Settings. A successful probe checks the content API, not just a landing page. Discovered mirrors support guest browsing only and cannot receive passwords or account tokens. Web routes are configured by the service administrator.
 
-If the publication page is unavailable, enter a current HTTPS mirror obtained from the official source using the manual route option. It probes content before switching. See [verification notes](docs/verification.md) for the temporary mirror tested in this run and its limitations.
+If the publication page is unavailable, enter a current HTTPS mirror obtained from the official source using the manual route option. It probes content before switching. The latest route and playback checks are recorded in the [verification notes](docs/verification.md#2026-11-26-黄果线路与片源).
 
 RecurseX 0.2.6 handles DNS, with Courierust 1.1.3 verifying DoH. Content uses Reqwest 0.13.5 / Rustls 0.23, retaining certificate validation, per-hop target checks, DNS pinning and credential isolation. DNS improvements cannot resolve IP/SNI blocking or an unavailable upstream. Proxy-free access across mainland China is not guaranteed. Actual results are recorded in [verification notes](docs/verification.md).
 

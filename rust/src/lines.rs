@@ -8,10 +8,8 @@ use nextjson::{Value, json};
 use std::time::Duration;
 
 /// 固定线路：写死在客户端里，不依赖任何外部页面。
-pub const FIXED: [(&str, &str); 2] = [
-    ("固定线路 1", "https://huangguoai.com"),
-    ("固定线路 2", "https://huangguoai.ai"),
-];
+pub const FIXED: [(&str, &str); 1] = [("固定线路 1", crate::net::DEFAULT_BASE)];
+pub const ADDRESS_DIRECTORY: &str = "https://huangguoai.ai";
 
 const PUBLISH_PAGE: &str = "https://huangguoai.pages.dev/";
 const MIRROR_MAX: usize = 60;
@@ -344,13 +342,20 @@ var foreverUrls = [
     #[tokio::test]
     #[ignore = "联网测试：探测上游线路连通性，手动用 --ignored 运行"]
     async fn probe_live() {
-        let urls = vec![
-            "https://huangguoai.com".to_string(),
-            "https://huangguoai.ai".to_string(),
-        ];
-        println!(
-            "{}",
-            nextjson::to_string_pretty(&probe(urls).await).expect("json")
+        let mut urls: Vec<_> = FIXED.iter().map(|(_, url)| url.to_string()).collect();
+        let mirrors = mirrors().await.expect("mirror publication");
+        urls.extend(
+            mirrors["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["url"].as_str().expect("mirror origin").to_owned()),
         );
+        let count = urls.len();
+        let report = probe(urls).await;
+        println!("{}", nextjson::to_string_pretty(&report).expect("json"));
+        let rows = report.as_array().unwrap();
+        assert_eq!(rows.len(), count);
+        assert!(rows.iter().all(|row| row["ok"].as_bool() == Some(true)));
     }
 }

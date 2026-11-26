@@ -1,5 +1,20 @@
 # 验证
 
+## 2026-11-26 黄果线路与片源
+
+固定线路 `huangguoai.com` 与两个不同域名的游客镜像均在旧 `/api/edge/request` 返回 HTTP 503 和“接口已停用”。同一批来源的 `GET /api/videos?page=1&size=24` 均返回成功业务状态和 24 条视频，`POST /api/videos/{id}/episodes/{ep}/playback` 返回带时效的媒体地址。旧固定线路 `huangguoai.ai` 的首页是地址目录，两个内容接口都返回 404。“换脸”和“魔改”分类在固定线路和两个镜像上均返回 HTTP 410 和“内容已下线”。
+
+在 Windows 当前系统代理下，固定线路和当日发布脚本生成的 38 个镜像全部通过应用的内容探测。逐条通过 Rust 服务读取片单、短剧详情、剧集播放地址，再通过本地媒体网关读取 HLS 清单和分片。每条线路选择一个剧集样本，FFmpeg 在 39 条线路上均成功解码出视频帧。固定线路另通过 Windows Flutter Profile 播放器集成测试，覆盖首帧、进度、跳转及切至第二集。测试范围为当日线路和抽样剧集。
+
+另在固定线路与两个镜像各抽测一部漫剧。上游为这三个样本提供主流，HEVC 字段为空，三个主流均成功解码。固定线路另有一集短剧同时提供主流和 HEVC，两个地址均已解码出首帧。
+
+以下命令可复测执行时发布的全部数据线路，以及固定线路的一次原生播放。
+
+```powershell
+cargo test --manifest-path rust/Cargo.toml --locked --lib lines::tests::probe_live -- --ignored --nocapture
+flutter drive --driver=test_driver/integration_test.dart --target=integration_test/native_bridge_test.dart --dart-define=HEDONE_LIVE_BASE=https://huangguoai.com --profile -d windows
+```
+
 ## 2026-11-15：播放可见性、起播与短视频控制层
 
 暂停策略由 PlaybackSession 统一管理。通知遮挡等 `inactive` 状态不再误暂停；隐藏、后台、分离及完整页面覆盖会暂停，并取消尚未完成请求的自动播放。选集、倍速与普通弹窗不暂停，返回播放页不擅自恢复。

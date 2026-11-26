@@ -1,8 +1,9 @@
 //! 业务命令：登录 / 列表 / 详情 / 播放 / 互动。
 
-use crate::net::{base, edge};
+use crate::net::{api_request, base};
 use crate::session::SessionStore;
 use nextjson::{Value, json};
+use reqwest::Method;
 
 pub struct Api {
     pub session: SessionStore,
@@ -18,23 +19,28 @@ impl Api {
     async fn get(&self, path: &str) -> Result<Value, String> {
         let origin = base();
         let token = self.session.token(&origin);
-        edge(&origin, "GET", path, None, token.as_deref()).await
+        api_request(&origin, Method::GET, path, None, token.as_deref()).await
     }
 
     /// POST（游客也可调用，有登录态时带上 token）：新播放接口需要。
     async fn post(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
         let origin = base();
         let token = self.session.token(&origin);
-        edge(&origin, "POST", path, body, token.as_deref()).await
+        api_request(&origin, Method::POST, path, body, token.as_deref()).await
     }
 
-    async fn authed(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+    async fn authed(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
         let origin = base();
         let token = self
             .session
             .token(&origin)
             .ok_or_else(|| "请先登录".to_string())?;
-        edge(&origin, method, path, body, Some(&token)).await
+        api_request(&origin, method, path, body, Some(&token)).await
     }
 }
 
@@ -167,9 +173,9 @@ pub async fn app_boot(state: &Api) -> Result<Value, String> {
 
 pub async fn api_login(state: &Api, username: String, password: String) -> Result<Value, String> {
     let origin = base();
-    let data = edge(
+    let data = api_request(
         &origin,
-        "POST",
+        Method::POST,
         "/api/account/loginByPassword",
         Some(json!({ "username": username, "password": password })),
         None,
@@ -205,9 +211,9 @@ pub async fn api_register(
             .unwrap()
             .insert("email".into(), json!(email));
     }
-    let data = edge(
+    let data = api_request(
         &origin,
-        "POST",
+        Method::POST,
         "/api/account/registerByPassword",
         Some(body),
         None,
@@ -233,7 +239,13 @@ pub async fn api_logout(state: &Api) -> Result<Value, String> {
     if let Some(token) = token {
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            edge(&origin, "POST", "/api/account/logout", None, Some(&token)),
+            api_request(
+                &origin,
+                Method::POST,
+                "/api/account/logout",
+                None,
+                Some(&token),
+            ),
         )
         .await;
     }
@@ -243,7 +255,14 @@ pub async fn api_logout(state: &Api) -> Result<Value, String> {
 pub async fn api_me(state: &Api) -> Result<Value, String> {
     let origin = base();
     let token = state.session.token(&origin);
-    let me = edge(&origin, "GET", "/api/account/me", None, token.as_deref()).await?;
+    let me = api_request(
+        &origin,
+        Method::GET,
+        "/api/account/me",
+        None,
+        token.as_deref(),
+    )
+    .await?;
     if base() != origin {
         return Err("读取账号期间线路已变化".into());
     }
@@ -310,6 +329,7 @@ pub async fn api_video(state: &Api, id: i64) -> Result<Value, String> {
 fn normalize_play_info(info: &mut Value) {
     fn non_empty(v: Option<&Value>) -> Option<String> {
         v.and_then(|x| x.as_str())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
     }
@@ -325,12 +345,17 @@ fn normalize_play_info(info: &mut Value) {
             obj.insert(field.into(), json!(url));
         }
     }
+    if non_empty(obj.get("video_url")).is_none()
+        && let Some(url) = non_empty(obj.get("video_url_hevc"))
+    {
+        obj.insert("video_url".into(), json!(url));
+    }
 }
 
 fn has_play_url(info: &Value) -> bool {
     info.get("video_url")
         .and_then(|v| v.as_str())
-        .is_some_and(|s| !s.is_empty())
+        .is_some_and(|s| !s.trim().is_empty())
 }
 
 pub async fn api_play(state: &Api, id: i64, ep: u32) -> Result<Value, String> {
@@ -356,7 +381,7 @@ pub async fn api_play(state: &Api, id: i64, ep: u32) -> Result<Value, String> {
     {
         Ok(mut legacy) => {
             normalize_play_info(&mut legacy);
-            if has_play_url(&legacy) || primary.is_err() {
+            if has_play_url(&legacy) {
                 Ok(legacy)
             } else {
                 primary
@@ -399,25 +424,25 @@ pub async fn api_comment_send(
         }
         _ => format!("/api/videos/{id}/comments?ep={ep}"),
     };
-    state.authed("POST", &path, Some(body)).await
+    state.authed(Method::POST, &path, Some(body)).await
 }
 
 pub async fn api_like(state: &Api, id: i64, ep: u32, on: bool) -> Result<Value, String> {
-    let method = if on { "POST" } else { "DELETE" };
+    let method = if on { Method::POST } else { Method::DELETE };
     state
         .authed(method, &format!("/api/videos/{id}/like?ep={ep}"), None)
         .await
 }
 
 pub async fn api_collect(state: &Api, id: i64, on: bool) -> Result<Value, String> {
-    let method = if on { "POST" } else { "DELETE" };
+    let method = if on { Method::POST } else { Method::DELETE };
     state
         .authed(method, &format!("/api/videos/{id}/collect"), None)
         .await
 }
 
 pub async fn api_follow(state: &Api, uid: i64, on: bool) -> Result<Value, String> {
-    let method = if on { "POST" } else { "DELETE" };
+    let method = if on { Method::POST } else { Method::DELETE };
     state
         .authed(method, &format!("/api/users/{uid}/follow"), None)
         .await
@@ -433,14 +458,14 @@ pub async fn cache_clear() -> Result<(), String> {
 /* ───────────────────────── 吃瓜帖子互动 ───────────────────────── */
 
 pub async fn api_post_like(state: &Api, id: i64, on: bool) -> Result<Value, String> {
-    let method = if on { "POST" } else { "DELETE" };
+    let method = if on { Method::POST } else { Method::DELETE };
     state
         .authed(method, &format!("/api/posts/{id}/like"), None)
         .await
 }
 
 pub async fn api_post_collect(state: &Api, id: i64, on: bool) -> Result<Value, String> {
-    let method = if on { "POST" } else { "DELETE" };
+    let method = if on { Method::POST } else { Method::DELETE };
     state
         .authed(method, &format!("/api/posts/{id}/collect"), None)
         .await
@@ -493,6 +518,9 @@ mod tests {
         normalize_play_info(&mut empty);
         assert!(!has_play_url(&empty));
         assert!(!has_play_url(&json!({"id": 1})));
+        let mut hevc = json!({"video_url": " ", "streams": {"hevc": "https://x/hevc.m3u8"}});
+        normalize_play_info(&mut hevc);
+        assert_eq!(hevc["video_url"], json!("https://x/hevc.m3u8"));
     }
 
     #[test]
